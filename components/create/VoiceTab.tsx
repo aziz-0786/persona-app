@@ -1,13 +1,13 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui";
-import { Mic, Square, Upload, AlertTriangle, Loader2 } from "lucide-react";
+import { Mic, Square, Upload, AlertTriangle, Loader2, FileAudio } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { processAudioToWav, type ProcessedAudio } from "@/lib/audio";
 import type { TabProps } from "./types";
 import { SaveStatus, type SaveState } from "./SaveStatus";
 
-const ACCEPTED_TYPES = ".wav,.mp3,.m4a";
+const ACCEPTED_TYPES = ".wav,.mp3,.m4a,.ogg,.webm";
 
 function pickMimeType(): string | undefined {
   if (typeof MediaRecorder === "undefined") return undefined;
@@ -17,12 +17,15 @@ function pickMimeType(): string | undefined {
 
 export function VoiceTab({ persona, patchPersona, onNext }: TabProps) {
   const [isRecording, setIsRecording] = useState(false);
+  const [isDragActive, setIsDragActive] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [processed, setProcessed] = useState<ProcessedAudio | null>(null);
   const [audioURL, setAudioURL] = useState<string | null>(null);
+  const [sourceLabel, setSourceLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>(persona.voiceRefB64 ? "saved" : "idle");
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -121,19 +124,27 @@ export function VoiceTab({ persona, patchPersona, onNext }: TabProps) {
     const blob = new Blob(chunksRef.current, {
       type: (chunksRef.current[0] as Blob)?.type || "audio/webm",
     });
-    await ingestClip(blob);
+    await ingestClip(blob, "Live recording");
   }
 
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    await ingestClip(file);
+    await ingestClip(file, file.name);
   }
 
-  async function ingestClip(blob: Blob) {
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setIsDragActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) ingestClip(file, file.name);
+  }
+
+  async function ingestClip(blob: Blob, label: string) {
     setError(null);
     setProcessing(true);
+    setSourceLabel(label);
     try {
       const buf = await blob.arrayBuffer();
       const result = await processAudioToWav(buf);
@@ -145,7 +156,7 @@ export function VoiceTab({ persona, patchPersona, onNext }: TabProps) {
       setSaveState("saved");
     } catch (err) {
       console.error(err);
-      setError("Couldn't process that audio. Try a clear .wav, .mp3, or .m4a clip.");
+      setError("Couldn't process that audio. Try a clear .wav, .mp3, .m4a, .ogg, or .webm clip.");
       setSaveState("error");
     } finally {
       setProcessing(false);
@@ -154,49 +165,72 @@ export function VoiceTab({ persona, patchPersona, onNext }: TabProps) {
 
   return (
     <div className="flex flex-col h-full min-h-[360px]">
-      <div className="flex-1 space-y-5">
+      <div className="flex-1 space-y-6">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-display text-lg font-semibold text-text-primary">Voice</h2>
             <p className="text-sm text-text-secondary mt-1">
-              Record or upload 10–15 seconds of clean speech — this becomes the voice reference.
+              Upload or record 10–30 seconds of clean speech — this becomes the voice reference.
             </p>
           </div>
           <SaveStatus state={saveState} />
         </div>
 
-        {/* Waveform / playback area */}
-        <div className="rounded-xl border border-border overflow-hidden bg-elevated">
-          <canvas
-            ref={canvasRef}
-            width={640}
-            height={120}
-            className={cn("w-full h-[120px]", !isRecording && "hidden")}
-          />
-          {!isRecording && audioURL && (
-            <div className="p-4">
-              <audio controls src={audioURL} className="w-full" />
-            </div>
-          )}
-          {!isRecording && !audioURL && (
-            <div className="h-[120px] flex items-center justify-center text-text-muted text-sm">
-              {processing ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 size={14} className="animate-spin" /> Processing audio…
-                </span>
-              ) : (
-                "No recording yet"
-              )}
-            </div>
-          )}
+        {/* Option A — Upload (primary) */}
+        <div className="space-y-2">
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragActive(true);
+            }}
+            onDragLeave={() => setIsDragActive(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={cn(
+              "border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer",
+              isDragActive ? "border-accent bg-accent/5" : "border-border hover:border-accent/50",
+              processing && "opacity-50 pointer-events-none"
+            )}
+          >
+            <Upload size={28} className="mx-auto text-text-muted mb-3" />
+            <p className="text-sm font-medium text-text-primary">
+              Drop a voice file here or click to browse
+            </p>
+            <p className="text-xs text-text-muted mt-1">Accepts: .wav .mp3 .m4a .ogg .webm</p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPTED_TYPES}
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </div>
+          <p className="text-xs text-text-muted">
+            Tip: 10–30 seconds of clean speech works best. One speaker, quiet room, no music.
+          </p>
         </div>
 
-        {/* Controls */}
-        <div className="flex flex-wrap items-center gap-3">
+        {/* Divider */}
+        <div className="flex items-center gap-3">
+          <div className="flex-1 h-px bg-border" />
+          <span className="text-xs text-text-muted flex-shrink-0">or record live</span>
+          <div className="flex-1 h-px bg-border" />
+        </div>
+
+        {/* Option B — Record (secondary) */}
+        <div className="space-y-3">
+          {isRecording && (
+            <canvas
+              ref={canvasRef}
+              width={640}
+              height={100}
+              className="w-full h-[100px] rounded-xl border border-border"
+            />
+          )}
           {!isRecording ? (
             <Button variant="secondary" onClick={startRecording} disabled={processing}>
               <Mic size={16} />
-              {audioURL ? "Re-record" : "Record"}
+              Record
             </Button>
           ) : (
             <Button variant="danger" onClick={stopRecording}>
@@ -204,29 +238,31 @@ export function VoiceTab({ persona, patchPersona, onNext }: TabProps) {
               Stop
             </Button>
           )}
-
-          <label
-            className={cn(
-              "inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl border border-border bg-elevated hover:bg-border text-text-primary cursor-pointer transition-colors",
-              processing && "opacity-50 pointer-events-none"
-            )}
-          >
-            <Upload size={16} />
-            Upload file
-            <input
-              type="file"
-              accept={ACCEPTED_TYPES}
-              onChange={handleFileUpload}
-              className="hidden"
-            />
-          </label>
-
-          {processed && (
-            <span className="text-xs text-text-muted">
-              {processed.durationSec.toFixed(1)}s clip
-            </span>
-          )}
         </div>
+
+        {/* Shared result: whichever clip (uploaded or recorded) was processed last */}
+        {(processing || processed) && !isRecording && (
+          <div className="rounded-xl border border-border bg-elevated p-4 space-y-3">
+            {processing ? (
+              <span className="flex items-center gap-2 text-sm text-text-muted">
+                <Loader2 size={14} className="animate-spin" /> Processing audio…
+              </span>
+            ) : (
+              processed && (
+                <>
+                  <div className="flex items-center gap-2 text-sm text-text-primary">
+                    <FileAudio size={14} className="text-accent flex-shrink-0" />
+                    <span className="truncate">{sourceLabel}</span>
+                    <span className="text-text-muted flex-shrink-0">
+                      · {processed.durationSec.toFixed(1)}s
+                    </span>
+                  </div>
+                  {audioURL && <audio controls src={audioURL} className="w-full" />}
+                </>
+              )
+            )}
+          </div>
+        )}
 
         {processed?.tooNoisy && (
           <div className="flex items-start gap-2 bg-warning/10 border border-warning/30 rounded-xl p-3 text-sm text-warning">
@@ -244,7 +280,7 @@ export function VoiceTab({ persona, patchPersona, onNext }: TabProps) {
       </div>
 
       <div className="flex justify-between items-center pt-4 border-t border-border">
-        <span className="text-xs text-text-muted">Accepted: .wav .mp3 .m4a, or record live</span>
+        <span className="text-xs text-text-muted">Both options save the same way</span>
         <Button size="sm" onClick={onNext}>
           Next →
         </Button>

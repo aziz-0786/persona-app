@@ -89,41 +89,50 @@ export async function POST(req: NextRequest) {
   }
 
   let characterCardText: string;
+  let stub = false;
 
   if (!process.env.RUNPOD_API_KEY || !process.env.RUNPOD_LLM_ENDPOINT_ID) {
     characterCardText = buildStubCard(persona.name, persona.relationship);
+    stub = true;
   } else {
-    const runpodRes = await fetch(RUNPOD_LLM_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.RUNPOD_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: process.env.RUNPOD_LLM_MODEL ?? "meta-llama/Llama-3.1-8B-Instruct",
-        messages: [
-          { role: "system", content: buildSystemPrompt(persona.name) },
-          { role: "user", content: buildUserPrompt(persona) },
-        ],
-        max_tokens: 700,
-        temperature: 0.85,
-        top_p: 0.9,
-        stream: false,
-      }),
-    });
+    // RunPod cold-starts or misconfigured endpoints shouldn't hard-block the
+    // wizard — fall back to a stub card (same as when keys are absent) and
+    // log the real cause server-side instead of surfacing a dead end.
+    try {
+      const runpodRes = await fetch(RUNPOD_LLM_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.RUNPOD_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: process.env.RUNPOD_LLM_MODEL ?? "meta-llama/Llama-3.1-8B-Instruct",
+          messages: [
+            { role: "system", content: buildSystemPrompt(persona.name) },
+            { role: "user", content: buildUserPrompt(persona) },
+          ],
+          max_tokens: 700,
+          temperature: 0.85,
+          top_p: 0.9,
+          stream: false,
+        }),
+      });
 
-    if (!runpodRes.ok) {
-      const err = await runpodRes.text();
-      console.error("RunPod generate-card error:", err);
-      return NextResponse.json({ error: "Character card generation failed" }, { status: 502 });
-    }
+      if (!runpodRes.ok) {
+        const err = await runpodRes.text();
+        throw new Error(`RunPod ${runpodRes.status}: ${err}`);
+      }
 
-    const data = await runpodRes.json();
-    const content = data.choices?.[0]?.message?.content?.trim();
-    if (!content) {
-      return NextResponse.json({ error: "Empty response from LLM" }, { status: 502 });
+      const data = await runpodRes.json();
+      const content = data.choices?.[0]?.message?.content?.trim();
+      if (!content) throw new Error("Empty response from LLM");
+
+      characterCardText = content;
+    } catch (err) {
+      console.error("RunPod generate-card error, falling back to stub card:", err);
+      characterCardText = buildStubCard(persona.name, persona.relationship);
+      stub = true;
     }
-    characterCardText = content;
   }
 
   const [updated] = await db
@@ -132,5 +141,5 @@ export async function POST(req: NextRequest) {
     .where(and(eq(personas.id, personaId), eq(personas.userId, session.user.id)))
     .returning();
 
-  return NextResponse.json({ characterCardText: updated.characterCardText });
+  return NextResponse.json({ characterCardText: updated.characterCardText, stub });
 }

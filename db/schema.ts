@@ -16,6 +16,8 @@ export const users = pgTable("users", {
   name: text("name"),
   image: text("image"),
   emailVerified: timestamp("email_verified", { withTimezone: true }),
+  displayName: text("display_name"), // preferred name; null until /user-setup is completed
+  profileBio: text("profile_bio"), // what personas should know about this user
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

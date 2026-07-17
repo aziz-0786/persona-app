@@ -2,10 +2,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, Input } from "@/components/ui";
-import { ShieldCheck, Mic, Square, UserCircle } from "lucide-react";
+import { ShieldCheck, Mic, Square, UserCircle, Upload } from "lucide-react";
 import Link from "next/link";
-import { RELATIONSHIP_OPTIONS } from "@/lib/personaFields";
 import { arrayBufferToBase64 } from "@/lib/audio";
+import { RelationshipSelect } from "@/components/RelationshipSelect";
 
 export default function OnboardPage() {
   const router = useRouter();
@@ -46,6 +46,19 @@ export default function OnboardPage() {
     mediaRecorder?.stop();
     setIsRecording(false);
     setMediaRecorder(null);
+  }
+
+  async function handleConsentFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const b64 = arrayBufferToBase64(buffer);
+      setConsentAudioB64(b64);
+    } catch {
+      alert("Couldn't read that audio file.");
+    }
   }
 
   async function handleContinue() {
@@ -110,23 +123,7 @@ export default function OnboardPage() {
               onChange={(e) => setName(e.target.value)}
               maxLength={80}
             />
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-text-secondary">Relationship</label>
-              <select
-                value={relationship}
-                onChange={(e) => setRelationship(e.target.value)}
-                className="w-full bg-elevated border border-border rounded-xl px-3.5 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors"
-              >
-                <option value="" disabled>
-                  Select a relationship
-                </option>
-                {RELATIONSHIP_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <RelationshipSelect value={relationship} onChange={setRelationship} />
           </div>
 
           {/* Explanation */}
@@ -156,7 +153,7 @@ export default function OnboardPage() {
               Say: &quot;I, [your name], consent to having my voice cloned for this
               digital persona.&quot;
             </p>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               {!isRecording ? (
                 <button
                   onClick={startRecording}
@@ -174,6 +171,20 @@ export default function OnboardPage() {
                   Stop
                 </button>
               )}
+
+              <span className="text-xs text-text-muted">or</span>
+
+              <label className="flex items-center gap-2 px-3 py-2 bg-elevated hover:bg-border border border-border text-text-secondary text-sm rounded-lg transition-colors cursor-pointer">
+                <Upload size={14} />
+                Upload file
+                <input
+                  type="file"
+                  accept=".wav,.mp3,.m4a,.ogg,.webm"
+                  onChange={handleConsentFileUpload}
+                  className="hidden"
+                />
+              </label>
+
               {consentAudioB64 && (
                 <span className="text-xs text-success flex items-center gap-1">
                   <span>✓</span> Consent recorded
@@ -183,26 +194,12 @@ export default function OnboardPage() {
           </div>
 
           {/* Consent checkbox */}
-          <label className="flex items-start gap-3 cursor-pointer group">
-            <div
-              className={`mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors ${
-                checkedConsent
-                  ? "bg-accent border-accent"
-                  : "border-border group-hover:border-accent/50"
-              }`}
-              onClick={() => setCheckedConsent(!checkedConsent)}
-            >
-              {checkedConsent && (
-                <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-                  <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-            </div>
+          <label className="flex items-start gap-3 cursor-pointer">
             <input
               type="checkbox"
-              className="sr-only"
               checked={checkedConsent}
               onChange={(e) => setCheckedConsent(e.target.checked)}
+              className="mt-1 w-4 h-4 rounded accent-accent cursor-pointer"
             />
             <span className="text-sm text-text-secondary">
               I understand and consent to voice cloning for this digital persona

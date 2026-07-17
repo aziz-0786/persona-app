@@ -20,6 +20,7 @@ export function PersonalityTab({ persona, patchPersona, onNext }: TabProps) {
   const [cardText, setCardText] = useState(persona.characterCardText ?? "");
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [isStub, setIsStub] = useState(false);
 
   const answeredCount = QUESTIONS.filter((q) => draft[q.id]?.trim()).length;
   const atSummary = index >= QUESTIONS.length;
@@ -59,6 +60,7 @@ export function PersonalityTab({ persona, patchPersona, onNext }: TabProps) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? "Generation failed");
       setCardText(data.characterCardText);
+      setIsStub(!!data.stub);
       await patchPersona({ characterCardText: data.characterCardText });
     } catch (err) {
       setGenError(err instanceof Error ? err.message : "Generation failed");
@@ -103,6 +105,13 @@ export function PersonalityTab({ persona, patchPersona, onNext }: TabProps) {
               <p className="text-sm text-text-muted">
                 Not generated yet. This turns everything above into a compact prompt that drives
                 how {persona.name} talks.
+              </p>
+            )}
+
+            {cardText && isStub && (
+              <p className="text-xs text-warning flex items-center gap-1">
+                <AlertTriangle size={12} /> Generated locally — the RunPod LLM endpoint wasn&apos;t
+                reachable, so this is a placeholder card.
               </p>
             )}
 

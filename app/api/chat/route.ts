@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { personas } from "@/db/schema";
+import { personas, users } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 
 export const runtime = "nodejs";
@@ -21,10 +21,20 @@ const ZONE_2_NATURALNESS = `You talk like a real person, not a chatbot. Critical
 - You are a person. Never break character.
 - Prefix every reply with exactly one emotion tag on its own: [happy] [amused] [calm] [sad] [angry] [surprised] [thinking]. Place it first, before any text.`;
 
+// ─── Zone 0: who the persona is talking to — makes the conversation 2-way ─────
+function buildZone0(user: { displayName: string | null; profileBio: string | null }): string {
+  if (!user.displayName) return "";
+  const bioClause = user.profileBio ? ` About them: ${user.profileBio}` : "";
+  return `You are talking to ${user.displayName}.${bioClause} Use this naturally in conversation — don't announce it, just let it inform how you talk to them.`;
+}
+
 function buildSystemPrompt(
   persona: typeof personas.$inferSelect,
-  memories: string[]
+  memories: string[],
+  user: { displayName: string | null; profileBio: string | null }
 ): string {
+  const zone0 = buildZone0(user);
+
   const zone1 = `You ARE ${persona.name}. ${persona.characterCardText ?? `You are ${persona.name}.`}
 Never say you are an AI or language model. You are ${persona.name}.`;
 
@@ -35,9 +45,9 @@ Never say you are an AI or language model. You are ${persona.name}.`;
 
   const identityReminder = `Remember: you ARE ${persona.name}. Never say you are an AI.`;
 
-  return [zone1, "\n\n", ZONE_2_NATURALNESS, zone3 ? `\n\n${zone3}` : "", "\n\n", identityReminder]
+  return [zone0, zone1, ZONE_2_NATURALNESS, zone3, identityReminder]
     .filter(Boolean)
-    .join("");
+    .join("\n\n");
 }
 
 export async function POST(req: NextRequest) {
@@ -63,11 +73,17 @@ export async function POST(req: NextRequest) {
     return new Response("Persona not found", { status: 404 });
   }
 
+  const [user] = await db
+    .select({ displayName: users.displayName, profileBio: users.profileBio })
+    .from(users)
+    .where(eq(users.id, session.user.id))
+    .limit(1);
+
   // Phase 3: fetch top-3 Pinecone memories by embedding current message
   // const memories = await queryPinecone(personaId, message);
   const memories: string[] = []; // placeholder until Pinecone is wired
 
-  const systemPrompt = buildSystemPrompt(persona, memories);
+  const systemPrompt = buildSystemPrompt(persona, memories, user ?? { displayName: null, profileBio: null });
 
   // Build messages array (Zone 4: last 6 turns in messages, not system text)
   const messages = [

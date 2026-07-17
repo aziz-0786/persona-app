@@ -23,7 +23,7 @@ const TABS: { id: Tab; label: string; icon: typeof User; description: string }[]
   { id: "profile",     label: "Profile",      icon: User,      description: "Name, relationship, bio" },
   { id: "voice",       label: "Voice",        icon: Mic,       description: "Record or upload reference audio" },
   { id: "knowledge",   label: "Knowledge",    icon: BookOpen,  description: "Paste text, upload docs" },
-  { id: "personality", label: "Personality",  icon: Brain,     description: "25-question interview" },
+  { id: "personality", label: "Personality",  icon: Brain,     description: "Quick personality interview" },
   { id: "avatar",      label: "Avatar",       icon: Smile,     description: "Avaturn or upload GLB" },
   { id: "review",      label: "Review",       icon: Eye,       description: "Character card preview" },
 ];

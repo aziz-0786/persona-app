@@ -2,9 +2,10 @@
 import { useState } from "react";
 import { Input, Textarea, Button } from "@/components/ui";
 import type { TabProps } from "./types";
-import { BIO_KEY, HARD_RULES_KEY, RELATIONSHIP_OPTIONS } from "@/lib/personaFields";
+import { BIO_KEY, HARD_RULES_KEY } from "@/lib/personaFields";
 import { SaveStatus, type SaveState } from "./SaveStatus";
 import { useBioDraft } from "./useBioDraft";
+import { RelationshipSelect } from "@/components/RelationshipSelect";
 
 export function ProfileTab({ persona, patchPersona, onNext }: TabProps) {
   const { draft, saveField } = useBioDraft(persona, patchPersona);
@@ -50,27 +51,14 @@ export function ProfileTab({ persona, patchPersona, onNext }: TabProps) {
           placeholder="e.g. Priya"
         />
 
-        <div className="flex flex-col gap-1.5">
-          <label className="text-sm font-medium text-text-secondary">Relationship</label>
-          <select
-            value={relationship}
-            onChange={(e) => setRelationship(e.target.value)}
-            onBlur={() => {
-              if (relationship !== (persona.relationship ?? ""))
-                runSave(() => patchPersona({ relationship }));
-            }}
-            className="w-full bg-elevated border border-border rounded-xl px-3.5 py-2.5 text-sm text-text-primary focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors"
-          >
-            <option value="" disabled>
-              Select a relationship
-            </option>
-            {RELATIONSHIP_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
+        <RelationshipSelect
+          value={relationship}
+          onChange={setRelationship}
+          onBlur={() => {
+            if (relationship !== (persona.relationship ?? ""))
+              runSave(() => patchPersona({ relationship }));
+          }}
+        />
 
         <Textarea
           label="Short bio"
