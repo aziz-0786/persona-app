@@ -65,7 +65,7 @@ export async function upsertKnowledgeChunks(
       [EMBED_TEXT_FIELD]: c.text,
       source: c.source,
     }));
-    await namespace.upsertRecords(batch);
+    await namespace.upsertRecords({ records: batch });
   }
 }
 

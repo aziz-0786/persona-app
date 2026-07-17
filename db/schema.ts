@@ -126,8 +126,6 @@ export const memoriesLog = pgTable("memories_log", {
 
 export const usersRelations = relations(users, ({ many }) => ({
   personas: many(personas),
-  accounts: many(accounts),
-  sessions: many(sessions),
 }));
 
 export const personasRelations = relations(personas, ({ one, many }) => ({
