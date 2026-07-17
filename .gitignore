@@ -1,0 +1,22 @@
+# Env files — never commit these
+.env
+.env.local
+.env*.local
+
+# Next.js
+.next/
+out/
+
+# Dependencies
+node_modules/
+
+# Build
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Drizzle migrations (optional — remove if you want to commit)
+db/migrations/

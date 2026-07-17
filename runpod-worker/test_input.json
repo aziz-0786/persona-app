@@ -1,0 +1,9 @@
+{
+  "input": {
+    "text": "Hey, how's it going? Good to finally talk to you.",
+    "voice_b64": "REPLACE_WITH_BASE64_OF_YOUR_10S_WAV_SAMPLE",
+    "exaggeration": 0.5,
+    "cfg_weight": 0.5,
+    "temperature": 0.8
+  }
+}
