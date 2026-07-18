@@ -61,6 +61,16 @@ def handler(job: dict) -> dict:
 
     text = inp.get("text", "").strip()
     voice_b64 = inp.get("voice_b64", "")
+
+    # Defensive: strip a browser data URL prefix if one slipped through
+    # ("data:audio/wav;base64,AAAA...") and fix padding — base64.b64decode()
+    # raises "Incorrect padding" on either, and this is the last line of
+    # defense before we crash mid-job.
+    if "," in voice_b64:
+        voice_b64 = voice_b64.split(",")[1]
+    if voice_b64:
+        voice_b64 += "=" * (4 - len(voice_b64) % 4) % 4
+
     exaggeration = float(inp.get("exaggeration", 0.5))
     cfg_weight = float(inp.get("cfg_weight", 0.5))
     temperature = float(inp.get("temperature", 0.8))
