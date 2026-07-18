@@ -69,7 +69,8 @@ def handler(job: dict) -> dict:
     if "," in voice_b64:
         voice_b64 = voice_b64.split(",")[1]
     if voice_b64:
-        voice_b64 += "=" * (4 - len(voice_b64) % 4) % 4
+        padding_needed = (4 - len(voice_b64) % 4) % 4
+        voice_b64 += "=" * padding_needed
 
     exaggeration = float(inp.get("exaggeration", 0.5))
     cfg_weight = float(inp.get("cfg_weight", 0.5))
