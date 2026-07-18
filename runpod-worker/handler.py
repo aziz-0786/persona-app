@@ -24,6 +24,7 @@ import runpod
 import base64
 import io
 import os
+import subprocess
 import uuid
 import logging
 
@@ -78,20 +79,53 @@ def handler(job: dict) -> dict:
 
     if not text:
         return {"error": "No text provided"}
-    if not voice_b64:
-        return {"error": "No voice_b64 provided"}
+    if not voice_b64 or len(voice_b64) < 100:
+        logger.warning(f"[{job_id}] No voice reference provided — skipping TTS")
+        return {"error": "No voice reference provided"}
 
     # Clamp params to valid ranges
     exaggeration = max(0.0, min(1.0, exaggeration))
     cfg_weight = max(0.0, min(1.0, cfg_weight))
     temperature = max(0.1, min(1.5, temperature))
 
-    # Write voice reference to a temp file
-    ref_path = f"/tmp/ref_{job_id}.wav"
+    raw_path = None
+    ref_path = None
     try:
-        ref_bytes = base64.b64decode(voice_b64)
-        with open(ref_path, "wb") as f:
-            f.write(ref_bytes)
+        audio_bytes = base64.b64decode(voice_b64)
+
+        # Browser MediaRecorder produces webm (Chrome) or ogg (Firefox), not
+        # WAV. Writing those bytes straight into a .wav file makes
+        # librosa/soundfile fail parsing it — silently, with an empty
+        # exception message (hence "Generation error: " with nothing after
+        # it in the logs). Detect the real container via magic bytes and
+        # always normalize through ffmpeg before handing it to the model.
+        audio_ext = ".webm"  # Chrome's MediaRecorder default
+        if len(audio_bytes) >= 4:
+            if audio_bytes[:4] == b"RIFF":
+                audio_ext = ".wav"
+            elif audio_bytes[:3] == b"OggS":
+                audio_ext = ".ogg"
+            elif audio_bytes[:3] == b"ID3" or audio_bytes[:2] == b"\xff\xfb":
+                audio_ext = ".mp3"
+            # else: treat as webm (covers webm, mkv, mp4)
+
+        raw_path = f"/tmp/ref_raw_{job_id}{audio_ext}"
+        with open(raw_path, "wb") as f:
+            f.write(audio_bytes)
+
+        # Convert to 16kHz mono WAV — guaranteed parseable regardless of
+        # what format actually came in.
+        ref_path = f"/tmp/ref_{job_id}.wav"
+        conversion = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", raw_path,
+                "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+                ref_path,
+            ],
+            capture_output=True, text=True,
+        )
+        if conversion.returncode != 0:
+            return {"error": f"Audio conversion failed: {conversion.stderr[-200:]}"}
 
         logger.info(
             f"[{job_id}] Generating: {len(text)} chars, "
@@ -118,13 +152,17 @@ def handler(job: dict) -> dict:
         return {"audio_base64": audio_b64, "sample_rate": 24000}
 
     except Exception as e:
-        logger.error(f"[{job_id}] Generation error: {e}")
-        return {"error": str(e)}
+        # str(e) can be empty (e.g. some soundfile/librosa failures) — fall
+        # back to the exception type so the log line is never blank.
+        message = str(e) or f"{type(e).__name__} (no further detail)"
+        logger.error(f"[{job_id}] Generation error: {message}")
+        return {"error": message}
 
     finally:
-        # Always clean up the temp file
-        if os.path.exists(ref_path):
-            os.remove(ref_path)
+        # Always clean up temp files
+        for p in (raw_path, ref_path):
+            if p and os.path.exists(p):
+                os.remove(p)
 
 
 # ─── Local test ───────────────────────────────────────────────────────────────
