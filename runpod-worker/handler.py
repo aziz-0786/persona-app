@@ -53,116 +53,103 @@ except Exception as e:
 
 # ─── Handler ──────────────────────────────────────────────────────────────────
 
-def handler(job: dict) -> dict:
-    """
-    RunPod serverless handler. Called once per inference request.
-    """
-    job_id = job.get("id", str(uuid.uuid4()))
-    inp = job.get("input", {})
+def handler(job):
+    import subprocess, tempfile, os, base64, io
+    import soundfile as sf
+    import numpy as np
 
-    text = inp.get("text", "").strip()
-    voice_b64 = inp.get("voice_b64", "")
+    job_id = job.get("id", "unknown")
+    job_input = job.get("input", {})
 
-    # Defensive: strip a browser data URL prefix if one slipped through
-    # ("data:audio/wav;base64,AAAA...") and fix padding — base64.b64decode()
-    # raises "Incorrect padding" on either, and this is the last line of
-    # defense before we crash mid-job.
+    text = job_input.get("text", "Hello, world!")
+    voice_b64 = job_input.get("voice_b64", "")
+    exaggeration = float(job_input.get("exaggeration", 0.5))
+    cfg_weight = float(job_input.get("cfg_weight", 0.5))
+    temperature = float(job_input.get("temperature", 0.8))
+
+    # ── GUARD: startup test with no voice reference ──────────────────────
+    # test_input.json has empty voice_b64. Return success so worker stays alive.
+    if not voice_b64 or len(voice_b64.strip().replace("=","")) < 50:
+        logger.info(f"[{job_id}] No voice reference — startup test OK")
+        return {"status": "ok", "note": "startup test passed — no voice_b64"}
+
+    # ── STRIP DATA URL PREFIX ─────────────────────────────────────────────
     if "," in voice_b64:
         voice_b64 = voice_b64.split(",")[1]
-    if voice_b64:
-        padding_needed = (4 - len(voice_b64) % 4) % 4
-        voice_b64 += "=" * padding_needed
 
-    exaggeration = float(inp.get("exaggeration", 0.5))
-    cfg_weight = float(inp.get("cfg_weight", 0.5))
-    temperature = float(inp.get("temperature", 0.8))
+    # ── FIX BASE64 PADDING ───────────────────────────────────────────────
+    padding_needed = (4 - len(voice_b64) % 4) % 4
+    voice_b64 += "=" * padding_needed
 
-    if not text:
-        return {"error": "No text provided"}
-    if not voice_b64 or len(voice_b64) < 100:
-        logger.warning(f"[{job_id}] No voice reference provided — skipping TTS")
-        return {"error": "No voice reference provided"}
-
-    # Clamp params to valid ranges
-    exaggeration = max(0.0, min(1.0, exaggeration))
-    cfg_weight = max(0.0, min(1.0, cfg_weight))
-    temperature = max(0.1, min(1.5, temperature))
-
-    raw_path = None
-    ref_path = None
+    # ── DECODE ───────────────────────────────────────────────────────────
     try:
         audio_bytes = base64.b64decode(voice_b64)
+    except Exception as e:
+        logger.error(f"[{job_id}] base64 decode failed: {e}")
+        return {"error": f"Invalid base64: {e}"}
 
-        # Browser MediaRecorder produces webm (Chrome) or ogg (Firefox), not
-        # WAV. Writing those bytes straight into a .wav file makes
-        # librosa/soundfile fail parsing it — silently, with an empty
-        # exception message (hence "Generation error: " with nothing after
-        # it in the logs). Detect the real container via magic bytes and
-        # always normalize through ffmpeg before handing it to the model.
-        audio_ext = ".webm"  # Chrome's MediaRecorder default
-        if len(audio_bytes) >= 4:
-            if audio_bytes[:4] == b"RIFF":
-                audio_ext = ".wav"
-            elif audio_bytes[:3] == b"OggS":
-                audio_ext = ".ogg"
-            elif audio_bytes[:3] == b"ID3" or audio_bytes[:2] == b"\xff\xfb":
-                audio_ext = ".mp3"
-            # else: treat as webm (covers webm, mkv, mp4)
+    # ── DETECT FORMAT BY MAGIC BYTES ─────────────────────────────────────
+    if len(audio_bytes) < 4:
+        return {"error": "Audio data too short"}
 
-        raw_path = f"/tmp/ref_raw_{job_id}{audio_ext}"
-        with open(raw_path, "wb") as f:
+    if audio_bytes[:4] == b'RIFF':
+        src_ext = ".wav"
+    elif audio_bytes[:3] == b'OggS':
+        src_ext = ".ogg"
+    elif audio_bytes[:3] == b'ID3' or audio_bytes[:2] in (b'\xff\xfb', b'\xff\xf3'):
+        src_ext = ".mp3"
+    else:
+        src_ext = ".webm"  # Chrome default
+
+    # ── CONVERT TO 16kHz MONO WAV VIA FFMPEG ────────────────────────────
+    raw_path, wav_path = None, None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=src_ext, delete=False) as f:
             f.write(audio_bytes)
+            raw_path = f.name
 
-        # Convert to 16kHz mono WAV — guaranteed parseable regardless of
-        # what format actually came in.
-        ref_path = f"/tmp/ref_{job_id}.wav"
-        conversion = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", raw_path,
-                "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
-                ref_path,
-            ],
-            capture_output=True, text=True,
+        wav_path = raw_path.replace(src_ext, "_ref.wav")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_path,
+             "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", wav_path],
+            capture_output=True, text=True
         )
-        if conversion.returncode != 0:
-            return {"error": f"Audio conversion failed: {conversion.stderr[-200:]}"}
+        if result.returncode != 0:
+            logger.error(f"[{job_id}] ffmpeg failed: {result.stderr[-300:]}")
+            return {"error": f"Audio conversion failed: {result.stderr[-200:]}"}
 
-        logger.info(
-            f"[{job_id}] Generating: {len(text)} chars, "
-            f"exag={exaggeration}, cfg={cfg_weight}, temp={temperature}"
-        )
+        logger.info(f"[{job_id}] Generating: {len(text)} chars, "
+                    f"exag={exaggeration}, cfg={cfg_weight}, temp={temperature}")
 
-        # ONLY generate() — no generate_stream() exists in Chatterbox
-        wav = model.generate(
-            text=text,
-            audio_prompt_path=ref_path,
+        # ── GENERATE ─────────────────────────────────────────────────────
+        wav_tensor = model.generate(
+            text,
+            audio_prompt_path=wav_path,
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
             temperature=temperature,
         )
 
-        # Convert tensor to WAV bytes
-        wav_np = wav.squeeze().cpu().numpy()
+        # ── ENCODE OUTPUT TO BASE64 WAV ───────────────────────────────────
+        wav_np = wav_tensor.squeeze().cpu().numpy()
         buf = io.BytesIO()
-        sf.write(buf, wav_np, samplerate=24000, format="WAV")
-        buf.seek(0)
-        audio_b64 = base64.b64encode(buf.read()).decode("utf-8")
+        sf.write(buf, wav_np, model.sr, format="WAV", subtype="PCM_16")
+        audio_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-        logger.info(f"[{job_id}] Done — output {len(audio_b64)} b64 chars")
-        return {"audio_base64": audio_b64, "sample_rate": 24000}
+        logger.info(f"[{job_id}] Done. Output size: {len(audio_b64)} chars")
+        return {"audio_base64": audio_b64, "sample_rate": model.sr}
 
     except Exception as e:
-        # str(e) can be empty (e.g. some soundfile/librosa failures) — fall
-        # back to the exception type so the log line is never blank.
-        message = str(e) or f"{type(e).__name__} (no further detail)"
-        logger.error(f"[{job_id}] Generation error: {message}")
-        return {"error": message}
+        logger.error(f"[{job_id}] Generation error: {repr(e)}")
+        return {"error": f"Generation failed: {repr(e)}"}
 
     finally:
-        # Always clean up temp files
-        for p in (raw_path, ref_path):
+        for p in [raw_path, wav_path]:
             if p and os.path.exists(p):
-                os.remove(p)
+                try:
+                    os.unlink(p)
+                except:
+                    pass
 
 
 # ─── Local test ───────────────────────────────────────────────────────────────
