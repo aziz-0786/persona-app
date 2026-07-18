@@ -169,14 +169,12 @@ if __name__ == "__main__":
     result = handler(test_job)
 
     if "error" in result:
-        print(f"ERROR: {result['error']}")
-    else:
-        # Write output WAV for listening
+        print(f"Startup test error: {result['error']}")
+    elif "audio_base64" in result:
         out_bytes = base64.b64decode(result["audio_base64"])
-        with open("/tmp/test_output.wav", "wb") as f:
-            f.write(out_bytes)
-        print(f"SUCCESS — output written to /tmp/test_output.wav")
-        print(f"Sample rate: {result['sample_rate']} Hz")
+        print(f"Startup test audio: {len(out_bytes)} bytes")
+    else:
+        print(f"Startup test passed: {result.get('note', 'ok')}")
 
 else:
     # Production entry point — RunPod calls this
