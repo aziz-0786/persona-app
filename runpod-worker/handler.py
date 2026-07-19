@@ -152,30 +152,20 @@ def handler(job):
                     pass
 
 
-# ─── Local test ───────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    """
-    Test locally before deploying.
-    Usage: python handler.py
-    Requires: test_input.json in the same directory
-    """
-    import json
-
-    with open(os.path.join(os.path.dirname(__file__), "test_input.json")) as f:
-        test_job = json.load(f)
-
-    test_job["id"] = "local-test-001"
-    result = handler(test_job)
-
-    if "error" in result:
-        print(f"Startup test error: {result['error']}")
-    elif "audio_base64" in result:
-        out_bytes = base64.b64decode(result["audio_base64"])
-        print(f"Startup test audio: {len(out_bytes)} bytes")
-    else:
-        print(f"Startup test passed: {result.get('note', 'ok')}")
-
+# ── STARTUP SELF-TEST (runs at import time) ──────────────────────────
+if os.environ.get("RUNPOD_ENDPOINT_ID"):
+    # Running on RunPod — skip local test, go straight to start
+    pass
 else:
-    # Production entry point — RunPod calls this
-    runpod.serverless.start({"handler": handler})
+    # Local test mode
+    _test_job = {"id": "local-test-001", "input": {"text": "test", "voice_b64": ""}}
+    _result = handler(_test_job)
+    if "error" in _result:
+        print(f"Startup test error: {_result['error']}")
+    elif "audio_base64" in _result:
+        print(f"Startup test audio: {len(_result['audio_base64'])} chars")
+    else:
+        print(f"Startup test passed: {_result.get('note', 'ok')}")
+
+# ── START RUNPOD SERVERLESS ───────────────────────────────────────────
+runpod.serverless.start({"handler": handler})
