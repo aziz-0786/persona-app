@@ -51,6 +51,16 @@ export default function CallPage() {
   const [interimText, setInterimText] = useState("");
   const [lastAssistantText, setLastAssistantText] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  const [warmupDone, setWarmupDone] = useState(false);
+  const [warmupFailed, setWarmupFailed] = useState(false);
+  const greetingAudioRef = useRef<string | null>(null);
+  const greetingSampleRateRef = useRef<number>(24000);
+  // Refs mirroring warmupDone/the Deepgram WS open state — the greeting-play
+  // check runs from ws.onopen, a callback registered once and otherwise
+  // closing over stale state, same reason stateRef mirrors state above.
+  const warmupDoneRef = useRef(false);
+  const wsReadyRef = useRef(false);
+  const greetingPlayedRef = useRef(false);
 
   // Latency tracking
   const [sttMs, setSttMs] = useState<number | null>(null);
@@ -395,7 +405,11 @@ export default function CallPage() {
       // Without this, a transient WS error (e.g. a brief handshake hiccup)
       // leaves micError stuck true forever — there was no path back to null,
       // permanently disabling the mic button for the rest of the session.
-      ws.onopen = () => setMicError(null);
+      ws.onopen = () => {
+        setMicError(null);
+        wsReadyRef.current = true;
+        tryPlayGreeting();
+      };
       ws.onerror = () => setMicError("Speech recognition connection error");
       wsRef.current = ws;
 
@@ -449,6 +463,74 @@ export default function CallPage() {
     }
     await micInitPromiseRef.current;
   }
+
+  // Plays the pre-fetched greeting once both halves of the race are ready:
+  // the TTS fetch (warmupDone) and the Deepgram WS (wsReadyRef). Called from
+  // both sides since either can finish first — whichever happens second
+  // triggers actual playback. No-ops after the first successful play, and
+  // no-ops entirely if the warmup fetch failed (greetingAudioRef stays null
+  // in that case, so checking it alone covers the failure case too).
+  function tryPlayGreeting() {
+    if (greetingPlayedRef.current) return;
+    if (!warmupDoneRef.current || !wsReadyRef.current) return;
+    if (!greetingAudioRef.current) return;
+
+    greetingPlayedRef.current = true;
+    const ctx = getAudioContext();
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    decodeB64ToAudioBuffer(greetingAudioRef.current, ctx)
+      .then((buf) => {
+        setConvState("speaking");
+        const queue = getAudioQueue();
+        queue.onended(() => setConvState("idle"));
+        queue.add(buf);
+      })
+      .catch((err) => {
+        console.error("[WARMUP] greeting playback failed:", err);
+      });
+  }
+
+  // Fires a short TTS ping the instant the persona loads, while the user is
+  // still looking at the "Connecting..." screen — this is what actually
+  // eliminates cold-start silence: by the time the user taps the mic, the
+  // RunPod worker (5-8 min cold start otherwise) is already warm.
+  useEffect(() => {
+    if (!persona) return;
+
+    const greetingText = "Hey, good to hear from you.";
+
+    fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        personaId: persona.id,
+        text: greetingText,
+        emotion: "happy",
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.audio_base64) {
+          greetingAudioRef.current = data.audio_base64;
+          greetingSampleRateRef.current = data.sample_rate ?? 24000;
+        } else {
+          setWarmupFailed(true);
+        }
+        warmupDoneRef.current = true;
+        setWarmupDone(true);
+        tryPlayGreeting();
+      })
+      .catch(() => {
+        // Even on failure, let the user in — just no greeting.
+        setWarmupFailed(true);
+        warmupDoneRef.current = true;
+        setWarmupDone(true);
+      });
+    // Runs once when persona first loads — refetching on every persona
+    // object identity change (e.g. an unrelated PATCH elsewhere) would
+    // re-fire the greeting TTS call, which isn't the intent here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persona]);
 
   useEffect(() => {
     // Guards against React Strict Mode's dev-only double-invoke (mount →
@@ -566,6 +648,30 @@ export default function CallPage() {
     }
 
     router.push("/");
+  }
+
+  // Warmup pre-screen: fires the greeting TTS ping the instant persona
+  // loads (see the useEffect above) and holds here until it settles, so the
+  // RunPod worker is already warm by the time the user reaches the mic
+  // button — no navigation, no reload, the conditional just disappears once
+  // warmupDone flips true. Guards !persona too (usePersona's fetch hasn't
+  // resolved yet) since the warmup screen below reads persona fields
+  // directly.
+  if (!persona || !warmupDone) {
+    return (
+      <div className="min-h-screen bg-void flex flex-col items-center justify-center gap-6">
+        {persona && <Avatar3D avatarUrl={persona.avatarUrl ?? undefined} />}
+        <div className="text-center">
+          <h2 className="text-xl font-semibold text-text-primary mb-1">
+            {persona?.name ?? "..."}
+          </h2>
+          <p className="text-text-secondary text-sm flex items-center gap-1 justify-center">
+            Connecting
+            <span className="animate-pulse">...</span>
+          </p>
+        </div>
+      </div>
+    );
   }
 
   return (
