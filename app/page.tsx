@@ -115,9 +115,11 @@ function PersonaCard({ persona }: { persona: typeof personas.$inferSelect }) {
           )}
         </div>
         <div className="flex-1 min-w-0">
-          <h3 className="font-display font-semibold text-text-primary truncate">
-            {persona.name}
-          </h3>
+          <Link href={`/personas/${persona.id}`} className="hover:text-warm transition-colors">
+            <h3 className="font-display font-semibold text-text-primary truncate">
+              {persona.name}
+            </h3>
+          </Link>
           {persona.relationship && (
             <p className="text-xs text-text-muted capitalize">
               {persona.relationship}
