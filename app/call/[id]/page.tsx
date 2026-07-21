@@ -53,13 +53,9 @@ export default function CallPage() {
   const [elapsed, setElapsed] = useState(0);
   const [warmupDone, setWarmupDone] = useState(false);
   const [warmupFailed, setWarmupFailed] = useState(false);
+  const [userTapped, setUserTapped] = useState(false);
   const greetingAudioRef = useRef<string | null>(null);
   const greetingSampleRateRef = useRef<number>(24000);
-  // Refs mirroring warmupDone/the Deepgram WS open state — the greeting-play
-  // check runs from ws.onopen, a callback registered once and otherwise
-  // closing over stale state, same reason stateRef mirrors state above.
-  const warmupDoneRef = useRef(false);
-  const wsReadyRef = useRef(false);
   const greetingPlayedRef = useRef(false);
 
   // Latency tracking
@@ -405,11 +401,7 @@ export default function CallPage() {
       // Without this, a transient WS error (e.g. a brief handshake hiccup)
       // leaves micError stuck true forever — there was no path back to null,
       // permanently disabling the mic button for the rest of the session.
-      ws.onopen = () => {
-        setMicError(null);
-        wsReadyRef.current = true;
-        tryPlayGreeting();
-      };
+      ws.onopen = () => setMicError(null);
       ws.onerror = () => setMicError("Speech recognition connection error");
       wsRef.current = ws;
 
@@ -464,30 +456,28 @@ export default function CallPage() {
     await micInitPromiseRef.current;
   }
 
-  // Plays the pre-fetched greeting once both halves of the race are ready:
-  // the TTS fetch (warmupDone) and the Deepgram WS (wsReadyRef). Called from
-  // both sides since either can finish first — whichever happens second
-  // triggers actual playback. No-ops after the first successful play, and
-  // no-ops entirely if the warmup fetch failed (greetingAudioRef stays null
-  // in that case, so checking it alone covers the failure case too).
-  function tryPlayGreeting() {
+  // Plays the pre-fetched greeting. Only ever called from the "Tap to
+  // connect" button's onClick — that's the user gesture that unlocks
+  // AudioContext.resume()/playback on Chrome/Safari. Calling this
+  // automatically from ws.onopen or the TTS fetch's .then() (no user
+  // gesture yet) would have the browser silently block it.
+  async function tryPlayGreeting() {
     if (greetingPlayedRef.current) return;
-    if (!warmupDoneRef.current || !wsReadyRef.current) return;
     if (!greetingAudioRef.current) return;
-
     greetingPlayedRef.current = true;
-    const ctx = getAudioContext();
-    if (ctx.state === "suspended") ctx.resume().catch(() => {});
-    decodeB64ToAudioBuffer(greetingAudioRef.current, ctx)
-      .then((buf) => {
-        setConvState("speaking");
-        const queue = getAudioQueue();
-        queue.onended(() => setConvState("idle"));
-        queue.add(buf);
-      })
-      .catch((err) => {
-        console.error("[WARMUP] greeting playback failed:", err);
-      });
+    try {
+      const ctx = getAudioContext();
+      await ctx.resume(); // safe to call again, idempotent
+      const buf = await decodeB64ToAudioBuffer(greetingAudioRef.current, ctx);
+      setConvState("speaking");
+      sendAudioRef.current = false;
+      const queue = getAudioQueue();
+      queue.onended(() => setConvState("idle"));
+      queue.add(buf);
+    } catch (e) {
+      console.warn("[WARMUP] greeting play failed:", e);
+      // Silent failure — user is already in the call UI, just no greeting.
+    }
   }
 
   // Fires a short TTS ping the instant the persona loads, while the user is
@@ -516,14 +506,11 @@ export default function CallPage() {
         } else {
           setWarmupFailed(true);
         }
-        warmupDoneRef.current = true;
         setWarmupDone(true);
-        tryPlayGreeting();
       })
       .catch(() => {
         // Even on failure, let the user in — just no greeting.
         setWarmupFailed(true);
-        warmupDoneRef.current = true;
         setWarmupDone(true);
       });
     // Runs once when persona first loads — refetching on every persona
@@ -654,28 +641,15 @@ export default function CallPage() {
   // loads (see the useEffect above) and holds here until it settles, so the
   // RunPod worker is already warm by the time the user reaches the mic
   // button — no navigation, no reload, the conditional just disappears once
-  // warmupDone flips true. Guards !persona too (usePersona's fetch hasn't
-  // resolved yet) since the warmup screen below reads persona fields
-  // directly.
-  if (!persona || !warmupDone) {
-    return (
-      <div className="min-h-screen bg-void flex flex-col items-center justify-center gap-6">
-        {persona && <Avatar3D avatarUrl={persona.avatarUrl ?? undefined} />}
-        <div className="text-center">
-          <h2 className="text-xl font-semibold text-text-primary mb-1">
-            {persona?.name ?? "..."}
-          </h2>
-          <p className="text-text-secondary text-sm flex items-center gap-1 justify-center">
-            Connecting
-            <span className="animate-pulse">...</span>
-          </p>
-        </div>
-      </div>
-    );
-  }
-
+  // warmupDone flips true and the user taps through. Avatar3D lives in ONE
+  // place below (in the always-mounted main UI) — it never unmounts across
+  // the warmup transition, so the GLB load isn't restarted. The overlay
+  // just sits on top (z-10) and disappears once userTapped; the main UI
+  // underneath is toggled invisible/block via CSS only, never removed from
+  // the tree, so its layout/WebGL sizing stays intact the whole time.
   return (
-    <div className="h-screen w-screen bg-void flex flex-col overflow-hidden">
+    <div className="relative h-screen w-screen overflow-hidden">
+      <div className={cn("h-screen w-screen bg-void flex flex-col overflow-hidden", !warmupDone && "invisible")}>
       {/* Top bar */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border/40">
         <div className="flex items-center gap-3">
@@ -837,6 +811,39 @@ export default function CallPage() {
             <span className={ttsMs ? "text-success" : "text-text-muted"}>
               {ttsMs ? `${ttsMs}ms` : "—"}
             </span>
+          </div>
+        </div>
+      )}
+      </div>
+
+      {/* Warmup overlay — covers the (already-mounted) call UI until the
+          user taps through. Phase A: TTS/greeting still fetching. Phase B:
+          fetch settled, waiting on the user gesture autoplay requires. */}
+      {!userTapped && (
+        <div className="absolute inset-0 bg-void flex flex-col items-center justify-center gap-6 z-10">
+          <div className="w-40 h-40 rounded-full bg-elevated animate-pulse" />
+          <div className="text-center">
+            <h2 className="text-xl font-semibold text-text-primary mb-1">
+              {personaName}
+            </h2>
+            {!warmupDone ? (
+              <p className="text-text-secondary text-sm flex items-center gap-1 justify-center">
+                Connecting
+                <span className="animate-pulse">...</span>
+              </p>
+            ) : (
+              <button
+                onClick={() => {
+                  setUserTapped(true);
+                  // User gesture: resume AudioContext then play the greeting.
+                  const ctx = getAudioContext();
+                  ctx.resume().then(() => tryPlayGreeting());
+                }}
+                className="mt-3 bg-accent hover:bg-accent/90 text-white px-8 py-3 rounded-full font-medium text-lg transition-all animate-pulse"
+              >
+                Tap to connect
+              </button>
+            )}
           </div>
         </div>
       )}
