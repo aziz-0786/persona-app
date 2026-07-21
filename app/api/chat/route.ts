@@ -1,13 +1,13 @@
 import { NextRequest } from "next/server";
+import Groq from "groq-sdk";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { personas, users } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { queryMemories } from "@/lib/pinecone";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
-
-const RUNPOD_LLM_URL = `https://api.runpod.ai/v2/${process.env.RUNPOD_LLM_ENDPOINT_ID}/openai/v1/chat/completions`;
 
 // ─── Zone 2: Human Speech Patterns — the naturalness core ─────────────────────
 const ZONE_2_NATURALNESS = `You talk like a real person, not a chatbot. Critical rules:
@@ -50,6 +50,94 @@ Never say you are an AI or language model. You are ${persona.name}.`;
     .join("\n\n");
 }
 
+function sseStream(lines: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      lines.forEach((line) => controller.enqueue(encoder.encode(line)));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+  });
+}
+
+const HARDCODED: { text: string; emotion: string }[] = [
+  { text: "Hey. What's up?", emotion: "calm" },
+  { text: "Oh, hey! Good to hear from you.", emotion: "happy" },
+  { text: "Hmm, let me think about that for a sec.", emotion: "thinking" },
+  { text: "Wait, really? Tell me more.", emotion: "surprised" },
+];
+
+function stubStreamResponse(): Response {
+  const pick = HARDCODED[Math.floor(Math.random() * HARDCODED.length)];
+
+  return new Response(
+    new ReadableStream({
+      async start(controller) {
+        const enc = new TextEncoder();
+        // 1. emotion event
+        controller.enqueue(enc.encode(
+          `data: ${JSON.stringify({ type: "emotion", emotion: pick.emotion })}\n\n`
+        ));
+        // 2. stream text word by word — emitted as `content`, the field the
+        // client's SSE parser actually reads (it has no handling for
+        // `type: "token"` / `token`, so that shape would render nothing).
+        const words = pick.text.split(" ");
+        for (const word of words) {
+          controller.enqueue(enc.encode(
+            `data: ${JSON.stringify({ content: word + " " })}\n\n`
+          ));
+          await new Promise(r => setTimeout(r, 40));
+        }
+        // 3. done
+        controller.enqueue(enc.encode("data: [DONE]\n\n"));
+        controller.close();
+      }
+    }),
+    { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } }
+  );
+}
+
+// Always closes with [DONE], same as the success path — the client only
+// knows how to end a "Thinking" state by seeing the stream close.
+function errorStreamResponse(message: string): Response {
+  return sseStream([
+    `data: ${JSON.stringify({ type: "error", message })}\n\n`,
+    "data: [DONE]\n\n",
+  ]);
+}
+
+type GroqChunk = { choices?: { delta?: { content?: string | null } }[] };
+type GroqLLMResult =
+  | { ok: true; stream: AsyncIterable<GroqChunk> }
+  | { ok: false; message: string };
+
+// Groq's OpenAI-compatible chat.completions endpoint — hosted, always warm,
+// no cold start / max_workers concept like RunPod. Free tier: 14,400
+// req/day on llama-3.1-8b-instant.
+async function callGroqLLM(
+  messages: { role: string; content: string }[]
+): Promise<GroqLLMResult> {
+  try {
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const stream = await groq.chat.completions.create({
+      model: process.env.GROQ_MODEL ?? "llama-3.1-8b-instant",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      messages: messages as any,
+      max_tokens: 150,
+      temperature: 0.85,
+      top_p: 0.9,
+      stream: true,
+      stop: ["\n\n", "Human:", "User:", "Assistant:"],
+    });
+    return { ok: true, stream };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : "Unknown error calling Groq" };
+  }
+}
+
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user) {
@@ -79,9 +167,9 @@ export async function POST(req: NextRequest) {
     .where(eq(users.id, session.user.id))
     .limit(1);
 
-  // Phase 3: fetch top-3 Pinecone memories by embedding current message
-  // const memories = await queryPinecone(personaId, message);
-  const memories: string[] = []; // placeholder until Pinecone is wired
+  // Pinecone integrated inference embeds `message` server-side — no separate
+  // embedding call. Degrades to [] if the persona has no memories yet.
+  const memories = process.env.PINECONE_API_KEY ? await queryMemories(personaId, message) : [];
 
   const systemPrompt = buildSystemPrompt(persona, memories, user ?? { displayName: null, profileBio: null });
 
@@ -92,68 +180,48 @@ export async function POST(req: NextRequest) {
     { role: "user", content: message },
   ];
 
-  if (!process.env.RUNPOD_API_KEY || !process.env.RUNPOD_LLM_ENDPOINT_ID) {
-    // Stub response for Phase 1 testing
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        const stubLines = [
-          `data: ${JSON.stringify({ type: "emotion", emotion: "calm" })}\n\n`,
-          `data: ${JSON.stringify({ content: "[calm] Hey. What's up?" })}\n\n`,
-          "data: [DONE]\n\n",
-        ];
-        stubLines.forEach((line) => controller.enqueue(encoder.encode(line)));
-        controller.close();
-      },
-    });
-    return new Response(stream, {
-      headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-    });
+  // Offline dev mode: set RUNPOD_OFFLINE=true to develop against the canned
+  // stub response without spending Groq requests, or as a fallback when
+  // GROQ_API_KEY isn't configured yet.
+  const useStub = !process.env.GROQ_API_KEY || process.env.RUNPOD_OFFLINE === "true";
+
+  if (useStub) {
+    return stubStreamResponse();
   }
 
-  // Call RunPod vLLM (OpenAI-compatible, stream=true)
-  const runpodRes = await fetch(RUNPOD_LLM_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.RUNPOD_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.RUNPOD_LLM_MODEL ?? "meta-llama/Llama-3.1-8B-Instruct",
-      messages,
-      max_tokens: 150,
-      temperature: 0.85,
-      top_p: 0.9,
-      stream: true,
-      stop: ["\n\n", "Human:", "User:", "Assistant:"],
-    }),
-  });
+  const result = await callGroqLLM(messages);
 
-  if (!runpodRes.ok) {
-    const err = await runpodRes.text();
-    console.error("RunPod LLM error:", err);
-    return new Response("LLM error", { status: 502 });
+  if (!result.ok) {
+    console.error("Groq LLM error:", result.message);
+    return errorStreamResponse(result.message);
   }
 
-  // Transform RunPod SSE → our SSE (extract emotion tag, strip from text)
+  // Defends against the model occasionally fusing the emotion tag with a
+  // lone leading character of the next token — e.g. "[surprised]h, hello!"
+  // instead of "[surprised]Oh, hello!" — which would otherwise show up as a
+  // stray character glued to punctuation at the very start of the bubble.
+  // Applied exactly once, only to the first text emitted right after the tag.
+  function stripStrayLeadingChar(text: string): string {
+    let result = text.replace(/^\s+/, "");
+    result = result.replace(/^[^\s,.;:!?](?=[,.;:!?])/, "");
+    result = result.replace(/^[,.;:!?]\s*/, "");
+    return result;
+  }
+
+  // Extract emotion tag, strip from text. Unlike the old RunPod fetch, the
+  // Groq SDK already parses each SSE event for us — no raw-byte buffering
+  // needed here.
   let emotionEmitted = false;
   let textBuffer = "";
+  let pendingTrim = false;
 
   const encoder = new TextEncoder();
-  const stream = new TransformStream({
-    async transform(chunk, controller) {
-      const text = new TextDecoder().decode(chunk);
-      for (const line of text.split("\n")) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") {
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          return;
-        }
 
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed.choices?.[0]?.delta?.content ?? "";
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const chunk of result.stream) {
+          const delta = chunk.choices?.[0]?.delta?.content ?? "";
           if (!delta) continue;
 
           textBuffer += delta;
@@ -167,6 +235,9 @@ export async function POST(req: NextRequest) {
                 encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion })}\n\n`)
               );
               emotionEmitted = true;
+              pendingTrim = true;
+              // Slice point is after the FULL match — tag plus any trailing
+              // whitespace \s* already consumed, whether zero or more chars.
               textBuffer = textBuffer.slice(match[0].length);
             } else if (textBuffer.length > 20) {
               // No tag found — emit default
@@ -178,19 +249,30 @@ export async function POST(req: NextRequest) {
           }
 
           if (emotionEmitted && textBuffer) {
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ content: textBuffer })}\n\n`)
-            );
+            let outText = textBuffer;
+            if (pendingTrim) {
+              outText = stripStrayLeadingChar(outText);
+              pendingTrim = false;
+            }
+            // Emitted as `content`, the field the client's SSE parser
+            // actually reads — it has no handling for `type: "token"` /
+            // `token`, so that shape would render nothing.
+            if (outText) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: outText })}\n\n`));
+            }
             textBuffer = "";
           }
-        } catch {}
+        }
+      } catch (err) {
+        console.error("Groq stream error:", err);
+      } finally {
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
       }
     },
   });
 
-  runpodRes.body!.pipeTo(stream.writable).catch(console.error);
-
-  return new Response(stream.readable, {
+  return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",

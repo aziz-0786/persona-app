@@ -69,24 +69,63 @@ export async function upsertKnowledgeChunks(
   }
 }
 
+async function indexExists(pc: Pinecone, indexName: string): Promise<boolean> {
+  const { indexes } = await pc.listIndexes();
+  return !!indexes?.some((idx) => idx.name === indexName);
+}
+
+// Shared by both knowledge and memory retrieval: checks the index exists
+// before querying, and never throws — an empty/missing namespace (e.g. a
+// persona with nothing ingested yet) just means no context to inject.
+async function searchTextIndex(
+  indexName: string,
+  personaId: string,
+  queryText: string,
+  field: string,
+  topK: number
+): Promise<string[]> {
+  const pc = getClient();
+  if (!(await indexExists(pc, indexName))) return [];
+
+  try {
+    const namespace = pc.index(indexName).namespace(personaId);
+    const response = await namespace.searchRecords({
+      query: { topK, inputs: { text: queryText } },
+      fields: [field],
+    });
+
+    return response.result.hits
+      .map((hit) => (hit.fields as Record<string, string> | undefined)?.[field])
+      .filter((v): v is string => !!v);
+  } catch (err) {
+    console.error(`Pinecone search error on index "${indexName}":`, err);
+    return [];
+  }
+}
+
 export async function queryKnowledge(
   personaId: string,
   queryText: string,
   topK = 3
 ): Promise<string[]> {
-  const pc = getClient();
-  const { indexes } = await pc.listIndexes();
-  if (!indexes?.some((idx) => idx.name === KNOWLEDGE_INDEX_NAME)) return [];
+  return searchTextIndex(KNOWLEDGE_INDEX_NAME, personaId, queryText, EMBED_TEXT_FIELD, topK);
+}
 
-  const namespace = pc.index(KNOWLEDGE_INDEX_NAME).namespace(personaId);
-  const response = await namespace.searchRecords({
-    query: { topK, inputs: { text: queryText } },
-    fields: [EMBED_TEXT_FIELD],
-  });
+// ─── Episodic memories (call/chat summaries) ───────────────────────────────────
+// Separate index from persona-knowledge: memoriesLog rows (db/schema.ts) are
+// the source of truth in Postgres; this index holds their embeddings for
+// semantic retrieval. Nothing upserts to this index yet (that's memory
+// commit — a later phase), so it may not exist — queryMemories degrades to
+// [] rather than throwing in that case.
+export const MEMORIES_INDEX_NAME = "persona-memories";
+const MEMORY_TEXT_FIELD = "text";
 
-  return response.result.hits.map(
-    (hit) => (hit.fields as Record<string, string>)[EMBED_TEXT_FIELD]
-  );
+export async function queryMemories(
+  personaId: string,
+  queryText: string,
+  topK = 3
+): Promise<string[]> {
+  return searchTextIndex(MEMORIES_INDEX_NAME, personaId, queryText, MEMORY_TEXT_FIELD, topK);
 }
 
 export async function deleteKnowledgeNamespace(personaId: string): Promise<void> {

@@ -118,3 +118,113 @@ export async function processAudioToWav(source: ArrayBuffer): Promise<ProcessedA
     ctx.close();
   }
 }
+
+// ─── Chat playback helpers ──────────────────────────────────────────────────
+// Used by /chat/[id] (and, later, the live call page) to play TTS responses:
+// decode a base64 WAV from /api/tts and queue it for gapless playback.
+
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+export async function decodeB64ToAudioBuffer(
+  b64: string,
+  ctx: AudioContext
+): Promise<AudioBuffer> {
+  return ctx.decodeAudioData(base64ToArrayBuffer(b64));
+}
+
+export interface AudioQueue {
+  add: (buffer: AudioBuffer) => void;
+  onended: (cb: (() => void) | null) => void;
+  // Phase 6: fires once per buffer, right as it's queued — lets the 3D
+  // avatar drive lip-sync from the same audio the queue is about to play.
+  onBuffer: (cb: ((buffer: AudioBuffer) => void) | null) => void;
+  stop: () => void;
+  clear: () => void;
+}
+
+// Gapless sequential playback: each queued buffer starts the instant the
+// previous one finishes. `add()` while idle starts playback immediately;
+// `add()` while something is already playing just enqueues it.
+export function createAudioQueue(ctx: AudioContext): AudioQueue {
+  const queue: AudioBuffer[] = [];
+  let currentSource: AudioBufferSourceNode | null = null;
+  let endedCb: (() => void) | null = null;
+  let bufferCb: ((buffer: AudioBuffer) => void) | null = null;
+
+  function playNext() {
+    const buffer = queue.shift();
+    if (!buffer) {
+      currentSource = null;
+      endedCb?.();
+      return;
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.onended = playNext;
+    currentSource = source;
+    source.start();
+  }
+
+  return {
+    add(buffer) {
+      bufferCb?.(buffer);
+      queue.push(buffer);
+      if (!currentSource) playNext();
+    },
+    onended(cb) {
+      endedCb = cb;
+    },
+    onBuffer(cb) {
+      bufferCb = cb;
+    },
+    // Hard stop: kill whatever's currently audible and drop anything queued.
+    stop() {
+      queue.length = 0;
+      if (currentSource) {
+        currentSource.onended = null;
+        try {
+          currentSource.stop();
+        } catch {}
+        currentSource = null;
+      }
+    },
+    // Soft stop: let the current clause finish, but don't start any more.
+    clear() {
+      queue.length = 0;
+    },
+  };
+}
+
+// Splits text into speakable clauses on [,.!?;:—], each with at least 4
+// words since the last split — used to feed TTS clause-by-clause as an LLM
+// response streams in, rather than waiting for the whole message. Clause
+// strings retain their original (untrimmed) substring so
+// `clauses.join("").length` always equals how many characters of the input
+// were consumed — callers streaming into this can safely compute the
+// unconsumed remainder as `text.slice(clauses.join("").length)`.
+const CLAUSE_BOUNDARY_CHARS = new Set([",", ".", "!", "?", ";", ":", "—"]);
+const MIN_CLAUSE_WORDS = 4;
+
+export function extractClauses(text: string): string[] {
+  const clauses: string[] = [];
+  let current = "";
+
+  for (const char of text) {
+    current += char;
+    if (CLAUSE_BOUNDARY_CHARS.has(char)) {
+      const wordCount = current.trim().split(/\s+/).filter(Boolean).length;
+      if (wordCount >= MIN_CLAUSE_WORDS) {
+        clauses.push(current);
+        current = "";
+      }
+    }
+  }
+
+  return clauses;
+}
