@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
 import { Card } from "@/components/ui";
 import { CHATTERBOX_PRESETS } from "@/lib/utils";
+import { DeleteAccountButton } from "@/components/DeleteAccountButton";
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -100,9 +101,7 @@ export default async function SettingsPage() {
                   and Pinecone memory namespaces.
                 </p>
               </div>
-              <button className="px-4 py-2 text-sm font-medium text-error bg-error/10 hover:bg-error/20 border border-error/30 rounded-xl transition-colors">
-                Delete account and all data
-              </button>
+              <DeleteAccountButton />
             </div>
           </Card>
         </section>
