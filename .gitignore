@@ -20,3 +20,5 @@ Thumbs.db
 
 # Drizzle migrations (optional — remove if you want to commit)
 db/migrations/
+
+tsconfig.tsbuildinfo
