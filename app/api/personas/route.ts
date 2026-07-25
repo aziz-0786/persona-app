@@ -63,6 +63,8 @@ export async function POST(req: NextRequest) {
     voiceParamsJson,
     avatarUrl,
     avatarType,
+    photoUrl,
+    videoRefUrl,
   } = body;
 
   const [persona] = await db
@@ -77,6 +79,8 @@ export async function POST(req: NextRequest) {
       voiceParamsJson,
       avatarUrl,
       avatarType,
+      photoUrl: photoUrl ?? null,
+      videoRefUrl: videoRefUrl ?? null,
     })
     .returning();
 

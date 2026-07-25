@@ -11,6 +11,8 @@ export type PersonaUpdate = Partial<
     | "voiceParamsJson"
     | "avatarUrl"
     | "avatarType"
+    | "photoUrl"
+    | "videoRefUrl"
   >
 >;
 

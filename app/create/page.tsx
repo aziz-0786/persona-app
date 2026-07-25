@@ -5,23 +5,25 @@ import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
 import { Card, Spinner } from "@/components/ui";
 import { cn } from "@/lib/utils";
-import { User, Mic, BookOpen, Brain, Smile, Eye, ChevronRight, Check } from "lucide-react";
+import { User, Mic, BookOpen, Brain, Smile, Eye, ChevronRight, Check, Images } from "lucide-react";
 import type { Persona } from "@/db/schema";
 import type { PersonaUpdate } from "@/components/create/types";
 import { getAnsweredCount } from "@/lib/personaFields";
 import { QUESTIONS } from "@/lib/questions";
 import { ProfileTab } from "@/components/create/ProfileTab";
 import { VoiceTab } from "@/components/create/VoiceTab";
+import { VisualsTab } from "@/components/create/VisualsTab";
 import { KnowledgeTab } from "@/components/create/KnowledgeTab";
 import { PersonalityTab } from "@/components/create/PersonalityTab";
 import { AvatarTab } from "@/components/create/AvatarTab";
 import { ReviewTab } from "@/components/create/ReviewTab";
 
-type Tab = "profile" | "voice" | "knowledge" | "personality" | "avatar" | "review";
+type Tab = "profile" | "voice" | "visuals" | "knowledge" | "personality" | "avatar" | "review";
 
 const TABS: { id: Tab; label: string; icon: typeof User; description: string }[] = [
   { id: "profile",     label: "Profile",      icon: User,      description: "Name, relationship, bio" },
   { id: "voice",       label: "Voice",        icon: Mic,       description: "Record or upload reference audio" },
+  { id: "visuals",     label: "Visuals",      icon: Images,    description: "Photo + video (optional)" },
   { id: "knowledge",   label: "Knowledge",    icon: BookOpen,  description: "Paste text, upload docs" },
   { id: "personality", label: "Personality",  icon: Brain,     description: "Quick personality interview" },
   { id: "avatar",      label: "Avatar",       icon: Smile,     description: "Avaturn or upload GLB" },
@@ -34,6 +36,8 @@ function isTabComplete(tab: Tab, persona: Persona): boolean {
       return !!persona.name && persona.name !== "New Persona";
     case "voice":
       return !!persona.voiceRefB64;
+    case "visuals":
+      return !!persona.photoUrl || !!persona.videoRefUrl;
     case "knowledge":
       return false; // lives in Pinecone, not on the persona row — no local signal
     case "personality":
@@ -215,6 +219,7 @@ function CreatePageInner() {
           <Card className="flex-1 min-h-[400px]">
             {activeTab === "profile" && <ProfileTab {...tabProps} />}
             {activeTab === "voice" && <VoiceTab {...tabProps} />}
+            {activeTab === "visuals" && <VisualsTab {...tabProps} />}
             {activeTab === "knowledge" && <KnowledgeTab {...tabProps} />}
             {activeTab === "personality" && <PersonalityTab {...tabProps} />}
             {activeTab === "avatar" && <AvatarTab {...tabProps} />}
