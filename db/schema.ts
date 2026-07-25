@@ -74,6 +74,8 @@ export const personas = pgTable("personas", {
   }>(),
   avatarUrl: text("avatar_url"), // Avaturn GLB URL or uploaded GLB path
   avatarType: text("avatar_type").$type<"avaturn" | "upload" | "vrm" | "default">(),
+  photoUrl: text("photo_url"), // persona photo — wallpaper background on call + chat pages
+  videoRefUrl: text("video_ref_url"), // template video — Duix face2face synthesis (optional, unlocks video avatar)
   consentVersion: text("consent_version"), // e.g. "1.0"
   consentScopeJson: json("consent_scope_json").$type<{
     voiceCloning: boolean;
