@@ -397,11 +397,24 @@ export default function ChatPage() {
   return (
     <AppShell>
       <div className="flex flex-col h-[calc(100vh-8rem)] max-w-2xl mx-auto">
+        {persona?.photoUrl && (
+          <div
+            className="fixed inset-0 -z-10 opacity-10 blur-3xl scale-110"
+            style={{ backgroundImage: `url(${persona.photoUrl})`, backgroundSize: "cover" }}
+          />
+        )}
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-border mb-4">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-full bg-elevated flex items-center justify-center flex-shrink-0 overflow-hidden">
-              {persona?.avatarType === "avaturn" && persona.avatarUrl ? (
+              {persona?.photoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={persona.photoUrl}
+                  alt={personaName}
+                  className="w-full h-full object-cover rounded-full ring-2 ring-white/20"
+                />
+              ) : persona?.avatarType === "avaturn" && persona.avatarUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={persona.avatarUrl} alt={personaName} className="w-full h-full object-cover" />
               ) : (
