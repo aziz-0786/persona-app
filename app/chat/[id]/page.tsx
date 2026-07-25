@@ -398,14 +398,27 @@ export default function ChatPage() {
     <AppShell>
       <div className="flex flex-col h-[calc(100vh-8rem)] max-w-2xl mx-auto">
         {persona?.photoUrl && (
-          <div className="fixed inset-0 -z-10" aria-hidden="true">
-            {/* Blurred photo fill */}
+          // No negative z-index here on purpose — body's own bg-void (the
+          // whole app's dark-theme canvas color, set in app/layout.tsx) is
+          // an ancestor that paints at the root stacking context's "0"
+          // level; a `-z-10` descendant sinks BELOW that and gets hidden
+          // behind it entirely. Rendering this first in the DOM with no
+          // z-index (same trick WallpaperCall already uses successfully on
+          // the call page) lets it paint on top of the canvas background
+          // while later siblings (header/messages/input) still layer over it.
+          <div className="fixed inset-0" aria-hidden="true">
+            {/* Layer 1: blurred fill — covers entire viewport, no empty bars */}
             <div
-              className="absolute inset-0 bg-cover bg-center scale-110 blur-3xl"
+              className="absolute inset-0 bg-cover bg-center scale-110"
+              style={{ backgroundImage: `url(${persona.photoUrl})`, filter: "blur(24px)" }}
+            />
+            {/* Layer 2: dark tint — keep chat readable but let photo show clearly */}
+            <div className="absolute inset-0 bg-black/40" />
+            {/* Layer 3: contained photo — full person visible, no cropping */}
+            <div
+              className="absolute inset-0 bg-contain bg-center bg-no-repeat"
               style={{ backgroundImage: `url(${persona.photoUrl})` }}
             />
-            {/* Dark tint over the blur so text remains readable */}
-            <div className="absolute inset-0 bg-black/70" />
           </div>
         )}
         {/* Header */}
