@@ -12,7 +12,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/settings", label: "Settings", icon: Settings },
   ];
 
-  const isFullscreen = pathname?.startsWith("/call/");
+  // /chat/[id] also goes fullscreen — its photo-background WhatsApp-style UI
+  // uses sticky top/bottom bars meant to pin to the viewport edges, which
+  // only works if this shell's own nav/padding isn't wrapping it too.
+  const isFullscreen = pathname?.startsWith("/call/") || pathname?.startsWith("/chat/");
 
   if (isFullscreen) return <>{children}</>;
 

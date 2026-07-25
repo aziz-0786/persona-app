@@ -6,13 +6,14 @@ import { Button } from "@/components/ui";
 import { cn, EMOTION_EMOJI } from "@/lib/utils";
 import { usePersona } from "@/lib/hooks";
 import { decodeB64ToAudioBuffer, createAudioQueue, extractClauses, type AudioQueue } from "@/lib/audio";
-import { Send, Volume2, Phone, Loader2 } from "lucide-react";
+import { Send, Volume2, Phone, Loader2, ChevronLeft } from "lucide-react";
 import Link from "next/link";
 
 type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  createdAt: number;
   emotion?: string;
   audioB64?: string;
   isError?: boolean;
@@ -27,6 +28,10 @@ type Message = {
   // cold starts take 5-8 min, so this tells the user it's not stuck.
   warmingUp?: boolean;
 };
+
+function formatTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
 
 // A single /api/tts fetch taking longer than this is almost certainly a
 // RunPod cold start, not a stalled request — surface the warming-up notice.
@@ -142,6 +147,7 @@ export default function ChatPage() {
       id: Date.now().toString(),
       role: "user",
       content: input.trim(),
+      createdAt: Date.now(),
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -151,7 +157,7 @@ export default function ChatPage() {
     const assistantId = (Date.now() + 1).toString();
     setMessages((prev) => [
       ...prev,
-      { id: assistantId, role: "assistant", content: "", emotion: "thinking" },
+      { id: assistantId, role: "assistant", content: "", emotion: "thinking", createdAt: Date.now() },
     ]);
 
     abortRef.current = new AbortController();
@@ -396,7 +402,7 @@ export default function ChatPage() {
 
   return (
     <AppShell>
-      <div className="flex flex-col h-[calc(100vh-8rem)] max-w-2xl mx-auto">
+      <div className="relative min-h-screen flex flex-col max-w-2xl mx-auto">
         {persona?.photoUrl && (
           // No negative z-index here on purpose — body's own bg-void (the
           // whole app's dark-theme canvas color, set in app/layout.tsx) is
@@ -421,145 +427,166 @@ export default function ChatPage() {
             />
           </div>
         )}
-        {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-border mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-elevated flex items-center justify-center flex-shrink-0 overflow-hidden">
-              {persona?.photoUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={persona.photoUrl}
-                  alt={personaName}
-                  className="w-full h-full object-cover rounded-full ring-2 ring-white/20"
-                />
-              ) : persona?.avatarType === "avaturn" && persona.avatarUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={persona.avatarUrl} alt={personaName} className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-sm font-display font-bold text-text-muted">
-                  {personaName[0]?.toUpperCase() ?? "?"}
-                </span>
-              )}
-            </div>
-            <div>
-              <h1 className="font-display font-semibold text-text-primary">{personaName}</h1>
-              <p className="text-xs text-text-muted">Text chat</p>
-            </div>
+
+        {/* Header — frosted glass, sticky. AppShell's own nav is skipped for
+            /chat/* (see components/layout/AppShell.tsx), so this is the only
+            way back to the dashboard — hence the back chevron. */}
+        <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-3 bg-black/50 backdrop-blur-md border-b border-white/10">
+          <Link
+            href="/"
+            className="p-1 -ml-1 rounded-full text-white/60 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0"
+          >
+            <ChevronLeft size={20} />
+          </Link>
+          <div className="w-11 h-11 rounded-full overflow-hidden flex-shrink-0 ring-2 ring-white/20">
+            {persona?.photoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={persona.photoUrl} alt={personaName} className="w-full h-full object-cover" />
+            ) : persona?.avatarType === "avaturn" && persona.avatarUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={persona.avatarUrl} alt={personaName} className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full bg-purple-600 flex items-center justify-center text-white font-semibold text-lg">
+                {personaName[0]?.toUpperCase() ?? "?"}
+              </div>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-semibold text-base leading-tight truncate">{personaName}</p>
+            <p className="text-white/50 text-xs">Text chat</p>
           </div>
           <Link
             href={`/call/${personaId}`}
-            className="flex items-center gap-1.5 px-3 py-2 bg-accent/10 hover:bg-accent/20 text-accent text-sm font-medium rounded-lg transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-sm font-medium transition-colors border border-white/20 flex-shrink-0"
           >
             <Phone size={13} />
-            Switch to call
+            Call
           </Link>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 flex flex-col">
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center gap-3">
-              <span className="text-4xl">💬</span>
-              <p className="text-sm text-text-muted">
-                Start a conversation with {personaName}
-              </p>
-            </div>
-          )}
-
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}
-            >
-              <div
-                className={cn(
-                  "max-w-[75%] rounded-2xl px-4 py-2.5 text-sm",
-                  msg.role === "user"
-                    ? "bg-accent text-white rounded-br-sm"
-                    : msg.isError
-                      ? "bg-error/10 border border-error/30 text-error rounded-bl-sm"
-                      : "bg-surface border border-border text-text-primary rounded-bl-sm"
-                )}
-              >
-                {msg.role === "assistant" && msg.emotion && (
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <span className="text-xs">{EMOTION_EMOJI[msg.emotion] ?? "😌"}</span>
-                    <span className="text-xs text-text-muted capitalize">{msg.emotion}</span>
-                  </div>
-                )}
-                {msg.content === "" && msg.role === "assistant" ? (
-                  <div className="flex gap-1 py-0.5">
-                    {[0, 1, 2].map((i) => (
-                      <div
-                        key={i}
-                        className="w-1.5 h-1.5 rounded-full bg-text-muted animate-bounce"
-                        style={{ animationDelay: `${i * 0.15}s` }}
-                      />
-                    ))}
-                  </div>
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-6">
+              <div className="w-16 h-16 rounded-full overflow-hidden mb-4 ring-4 ring-white/10 shadow-xl">
+                {persona?.photoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={persona.photoUrl} alt={personaName} className="w-full h-full object-cover" />
                 ) : (
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
-                )}
-                {msg.role === "assistant" && msg.content && !msg.isError && (
-                  <div className="mt-1.5">
-                    {msg.ttsFailed ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-error">{msg.ttsError ?? "Playback failed"}</span>
-                        <button
-                          onClick={() => playAudio(msg)}
-                          className="text-xs text-accent hover:underline flex-shrink-0"
-                        >
-                          Retry
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => playAudio(msg)}
-                        disabled={msg.ttsLoading || (playingId !== null && playingId !== msg.id)}
-                        className={cn(
-                          "flex items-center gap-1.5 text-xs transition-colors",
-                          playingId === msg.id
-                            ? "text-accent"
-                            : "text-text-muted hover:text-text-secondary"
-                        )}
-                      >
-                        {playingId === msg.id ? (
-                          <span className="flex items-end gap-0.5 h-2.5">
-                            {[0, 1, 2].map((i) => (
-                              <span
-                                key={i}
-                                className="w-0.5 bg-accent rounded-full animate-pulse"
-                                style={{ height: `${4 + i * 3}px`, animationDelay: `${i * 0.15}s` }}
-                              />
-                            ))}
-                          </span>
-                        ) : msg.ttsLoading ? (
-                          <Loader2 size={11} className="animate-spin" />
-                        ) : (
-                          <Volume2 size={11} />
-                        )}
-                        {playingId === msg.id ? "Playing..." : msg.ttsLoading ? "Loading..." : "Play"}
-                      </button>
-                    )}
-                    {!msg.ttsFailed && msg.ttsError && (
-                      <p className="text-xs text-error mt-1">{msg.ttsError}</p>
-                    )}
-                    {msg.warmingUp && (
-                      <p className="text-xs text-text-muted mt-1 italic">
-                        Warming up voice model... (first response may take up to 2 min)
-                      </p>
-                    )}
+                  <div className="w-full h-full bg-purple-600 flex items-center justify-center text-white text-2xl font-bold">
+                    {personaName[0]?.toUpperCase() ?? "?"}
                   </div>
                 )}
               </div>
+              <p className="text-white font-semibold text-lg mb-1">{personaName}</p>
+              <p className="text-white/50 text-sm">Start a conversation</p>
             </div>
-          ))}
+          )}
+
+          {messages.map((msg) =>
+            msg.role === "user" ? (
+              <div key={msg.id} className="flex justify-end">
+                <div className="max-w-[75%] px-4 py-2.5 rounded-2xl rounded-br-sm bg-purple-600 text-white shadow-lg">
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                  <p className="text-xs text-white/60 mt-1 text-right">{formatTime(msg.createdAt)}</p>
+                </div>
+              </div>
+            ) : (
+              <div key={msg.id} className="flex justify-start gap-2">
+                <div className="w-7 h-7 rounded-full overflow-hidden flex-shrink-0 self-end mb-1">
+                  {persona?.photoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={persona.photoUrl} alt={personaName} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-gray-600 flex items-center justify-center text-white text-xs font-semibold">
+                      {personaName[0]?.toUpperCase() ?? "?"}
+                    </div>
+                  )}
+                </div>
+                <div
+                  className={cn(
+                    "max-w-[75%] px-4 py-2.5 rounded-2xl rounded-bl-sm shadow-lg",
+                    msg.isError
+                      ? "bg-red-950/60 backdrop-blur-sm border border-red-500/30 text-red-200"
+                      : "bg-white/15 backdrop-blur-sm border border-white/10 text-white"
+                  )}
+                >
+                  {msg.emotion && !msg.isError && (
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <span className="text-xs">{EMOTION_EMOJI[msg.emotion] ?? "😌"}</span>
+                      <span className="text-xs text-white/60 capitalize">{msg.emotion}</span>
+                    </div>
+                  )}
+                  {msg.content === "" ? (
+                    <div className="flex gap-1 items-center py-0.5">
+                      <span className="w-2 h-2 rounded-full bg-white/60 animate-bounce" style={{ animationDelay: "0ms" }} />
+                      <span className="w-2 h-2 rounded-full bg-white/60 animate-bounce" style={{ animationDelay: "150ms" }} />
+                      <span className="w-2 h-2 rounded-full bg-white/60 animate-bounce" style={{ animationDelay: "300ms" }} />
+                    </div>
+                  ) : (
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                  )}
+                  <p className="text-xs text-white/50 mt-1">{formatTime(msg.createdAt)}</p>
+
+                  {msg.content && !msg.isError && (
+                    <div className="mt-1.5">
+                      {msg.ttsFailed ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-red-300">{msg.ttsError ?? "Playback failed"}</span>
+                          <button
+                            onClick={() => playAudio(msg)}
+                            className="text-xs text-white/80 hover:underline flex-shrink-0"
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => playAudio(msg)}
+                          disabled={msg.ttsLoading || (playingId !== null && playingId !== msg.id)}
+                          className={cn(
+                            "flex items-center gap-1.5 text-xs transition-colors",
+                            playingId === msg.id ? "text-white" : "text-white/60 hover:text-white/80"
+                          )}
+                        >
+                          {playingId === msg.id ? (
+                            <span className="flex items-end gap-0.5 h-2.5">
+                              {[0, 1, 2].map((i) => (
+                                <span
+                                  key={i}
+                                  className="w-0.5 bg-white rounded-full animate-pulse"
+                                  style={{ height: `${4 + i * 3}px`, animationDelay: `${i * 0.15}s` }}
+                                />
+                              ))}
+                            </span>
+                          ) : msg.ttsLoading ? (
+                            <Loader2 size={11} className="animate-spin" />
+                          ) : (
+                            <Volume2 size={11} />
+                          )}
+                          {playingId === msg.id ? "Playing..." : msg.ttsLoading ? "Loading..." : "Play"}
+                        </button>
+                      )}
+                      {!msg.ttsFailed && msg.ttsError && (
+                        <p className="text-xs text-red-300 mt-1">{msg.ttsError}</p>
+                      )}
+                      {msg.warmingUp && (
+                        <p className="text-xs text-white/50 mt-1 italic">
+                          Warming up voice model... (first response may take up to 2 min)
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          )}
           <div ref={bottomRef} />
         </div>
 
-        {/* Input */}
-        <div className="flex items-end gap-2 pt-4 border-t border-border mt-4">
-          <div className="flex-1">
+        {/* Input — frosted glass, sticky */}
+        <div className="sticky bottom-0 z-10 px-4 py-3 bg-black/50 backdrop-blur-md border-t border-white/10">
+          <div className="flex items-end gap-3">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -571,12 +598,12 @@ export default function ChatPage() {
               }}
               placeholder={`Message ${personaName}...`}
               rows={1}
-              className="w-full bg-elevated border border-border rounded-xl px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/50 transition-colors max-h-32"
+              className="flex-1 max-h-32 px-4 py-3 rounded-2xl resize-none bg-white/10 backdrop-blur-sm border border-white/15 text-white placeholder-white/40 text-sm focus:outline-none focus:border-purple-400/60 focus:bg-white/15 transition-colors"
             />
+            <Button onClick={sendMessage} loading={isLoading} disabled={!input.trim()}>
+              <Send size={16} />
+            </Button>
           </div>
-          <Button onClick={sendMessage} loading={isLoading} disabled={!input.trim()}>
-            <Send size={16} />
-          </Button>
         </div>
       </div>
     </AppShell>

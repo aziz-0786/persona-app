@@ -137,7 +137,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let data: { output?: { audio_base64?: string; sample_rate?: number }; audio_base64?: string; sample_rate?: number };
+  type RunpodResult = {
+    id?: string;
+    status?: string;
+    error?: unknown;
+    output?: { audio_base64?: string; sample_rate?: number };
+    audio_base64?: string;
+    sample_rate?: number;
+  };
+
+  let data: RunpodResult;
   try {
     data = await runpodRes.json();
   } catch (err) {
@@ -146,13 +155,56 @@ export async function POST(req: NextRequest) {
   }
 
   console.log("[TTS] RunPod keys:", Object.keys(data ?? {}));
+  console.log("[TTS] RunPod status field:", data?.status);
+
+  // A cold worker doesn't finish inside runsync's own internal wait window —
+  // RunPod hands back IN_QUEUE/IN_PROGRESS with a job id instead of blocking
+  // further. Poll /status/{id} until it settles rather than treating that as
+  // a missing-audio failure.
+  if (data.status === "IN_QUEUE" || data.status === "IN_PROGRESS") {
+    const jobId = data.id;
+    if (!jobId) {
+      return NextResponse.json({ error: "RunPod returned IN_QUEUE with no job ID" }, { status: 502 });
+    }
+
+    console.log(`[TTS] Job ${jobId} is ${data.status} — polling...`);
+
+    const pollStart = Date.now();
+    const pollTimeout = 300_000; // 5 minutes max
+    const pollInterval = 3000; // poll every 3 seconds
+
+    while (Date.now() - pollStart < pollTimeout) {
+      await new Promise((r) => setTimeout(r, pollInterval));
+
+      const statusRes = await fetch(
+        `https://api.runpod.ai/v2/${process.env.RUNPOD_TTS_ENDPOINT_ID}/status/${jobId}`,
+        { headers: { Authorization: `Bearer ${process.env.RUNPOD_API_KEY}` } }
+      );
+      data = await statusRes.json();
+      console.log(`[TTS] Poll status: ${data.status}`);
+
+      if (data.status === "COMPLETED") break;
+      if (data.status === "FAILED" || data.status === "CANCELLED") {
+        return NextResponse.json(
+          { error: `RunPod TTS job ${data.status}: ${JSON.stringify(data.error)}` },
+          { status: 502 }
+        );
+      }
+      // IN_QUEUE / IN_PROGRESS — keep polling
+    }
+
+    if (data.status !== "COMPLETED") {
+      return NextResponse.json({ error: "RunPod TTS timed out after 5 minutes" }, { status: 504 });
+    }
+  }
+
   console.log("[TTS] RunPod output keys:", Object.keys(data?.output ?? {}));
   console.log(
     "[TTS] audio_base64 length:",
     data?.output?.audio_base64?.length ?? data?.audio_base64?.length ?? 0
   );
 
-  // RunPod runsync wraps output in { output: { ... } }
+  // RunPod runsync (and /status) wrap output in { output: { ... } }
   const output = data.output ?? data;
 
   if (!output.audio_base64) {

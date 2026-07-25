@@ -11,6 +11,8 @@ interface WallpaperCallProps {
   onMicRelease: () => void;
   onEndCall: () => void;
   latencyMs?: number;
+  history?: Array<{ role: "user" | "assistant"; content: string }>;
+  liveCaption?: string; // current interim Deepgram transcript
 }
 
 // Deterministic gradient from persona name (so it's always the same color for the same persona)
@@ -94,6 +96,8 @@ export default function WallpaperCall({
   onMicRelease,
   onEndCall,
   latencyMs,
+  history,
+  liveCaption,
 }: WallpaperCallProps) {
   const gradient = nameToGradient(persona.name);
 
@@ -169,6 +173,35 @@ export default function WallpaperCall({
             <p className="text-white/50 text-sm tracking-wide">{statusText[state]}</p>
           )}
         </div>
+
+        {/* Transcript overlay — only shown when history has content OR live caption active */}
+        {((history && history.length > 0) || liveCaption) && (
+          <div className="absolute bottom-28 left-0 right-0 px-4 max-h-48 overflow-y-auto flex flex-col gap-2 pointer-events-none">
+            {/* Conversation history bubbles — last 4 turns max */}
+            {(history ?? []).slice(-4).map((turn, i) => (
+              <div key={i} className={`flex ${turn.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div
+                  className={`max-w-[80%] px-3 py-2 rounded-2xl text-sm leading-relaxed shadow-lg ${
+                    turn.role === "user"
+                      ? "bg-white/20 backdrop-blur-sm text-white rounded-br-sm"
+                      : "bg-black/40 backdrop-blur-sm text-white rounded-bl-sm"
+                  }`}
+                >
+                  {turn.content}
+                </div>
+              </div>
+            ))}
+
+            {/* Live caption — what's being heard right now */}
+            {liveCaption && (
+              <div className="flex justify-end">
+                <div className="max-w-[80%] px-3 py-2 rounded-2xl rounded-br-sm text-sm bg-white/10 backdrop-blur-sm text-white/70 italic border border-white/15">
+                  {liveCaption}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Bottom bar: buttons */}
         <div className="pb-12 px-5">

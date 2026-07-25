@@ -48,6 +48,13 @@ export default function CallPage() {
   const [interimText, setInterimText] = useState("");
   const [lastAssistantText, setLastAssistantText] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  // Reactive mirror of historyRef — historyRef itself is a plain ref (used
+  // for reading the latest value synchronously inside submitTurn/endCall
+  // without a stale closure), so mutating it alone never triggers a
+  // re-render. WallpaperCall's transcript overlay needs an actual state
+  // update to show new turns, hence this pairing (same ref+state mirror
+  // pattern as stateRef/state above).
+  const [history, setHistory] = useState<HistoryTurn[]>([]);
   const [warmupDone, setWarmupDone] = useState(false);
   const [warmupFailed, setWarmupFailed] = useState(false);
   const [userTapped, setUserTapped] = useState(false);
@@ -149,6 +156,7 @@ export default function CallPage() {
       ttsAbortRef.current = myTtsController;
 
       historyRef.current = [...historyRef.current, { role: "user", content: trimmed }];
+      setHistory(historyRef.current);
       setLastUserText(trimmed);
       setInterimText("");
       setSttMs(sttStartRef.current ? Date.now() - sttStartRef.current : null);
@@ -296,6 +304,7 @@ export default function CallPage() {
       if (clauseBuffer.trim()) flushClause(clauseBuffer);
       if (turnIdRef.current === myTurnId && fullText.trim()) {
         historyRef.current = [...historyRef.current, { role: "assistant", content: fullText }];
+        setHistory(historyRef.current);
       }
 
       // Not awaited — if TTS is still mid cold-start, the turn shouldn't
@@ -668,6 +677,8 @@ export default function CallPage() {
           onMicRelease={() => {}}
           onEndCall={endCall}
           latencyMs={combinedLatencyMs}
+          history={history}
+          liveCaption={interimText}
         />
       </div>
 
