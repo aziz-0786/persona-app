@@ -46,9 +46,9 @@ export default function UserSetupPage() {
       <div className="w-full max-w-md">
         <div className="flex items-center gap-2 mb-8">
           <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center shadow-glow">
-            <span className="text-white text-sm font-bold">P</span>
+            <span className="text-white text-sm font-bold">L</span>
           </div>
-          <span className="font-display font-semibold text-text-primary">Persona</span>
+          <span className="font-display font-semibold text-text-primary">Lyra.ai</span>
         </div>
 
         <div className="bg-surface border border-border rounded-2xl p-6 space-y-6">

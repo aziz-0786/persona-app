@@ -398,10 +398,15 @@ export default function ChatPage() {
     <AppShell>
       <div className="flex flex-col h-[calc(100vh-8rem)] max-w-2xl mx-auto">
         {persona?.photoUrl && (
-          <div
-            className="fixed inset-0 -z-10 opacity-10 blur-3xl scale-110"
-            style={{ backgroundImage: `url(${persona.photoUrl})`, backgroundSize: "cover" }}
-          />
+          <div className="fixed inset-0 -z-10" aria-hidden="true">
+            {/* Blurred photo fill */}
+            <div
+              className="absolute inset-0 bg-cover bg-center scale-110 blur-3xl"
+              style={{ backgroundImage: `url(${persona.photoUrl})` }}
+            />
+            {/* Dark tint over the blur so text remains readable */}
+            <div className="absolute inset-0 bg-black/70" />
+          </div>
         )}
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-border mb-4">

@@ -35,10 +35,10 @@ export default function LoginPage() {
         {/* Logo */}
         <div className="text-center">
           <div className="w-12 h-12 rounded-2xl bg-accent flex items-center justify-center shadow-glow mx-auto mb-3">
-            <span className="text-white font-bold text-lg">P</span>
+            <span className="text-white font-bold text-lg">L</span>
           </div>
           <h1 className="font-display text-2xl font-semibold text-text-primary">
-            Welcome to Persona
+            Welcome to Lyra.ai
           </h1>
           <p className="text-sm text-text-muted mt-1">
             Sign in to access your digital twins

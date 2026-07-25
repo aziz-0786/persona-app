@@ -23,10 +23,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
           <Link href="/" className="flex items-center gap-2 group">
             <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shadow-glow">
-              <span className="text-white text-xs font-bold">P</span>
+              <span className="text-white text-xs font-bold">L</span>
             </div>
             <span className="font-display font-semibold text-text-primary group-hover:text-warm transition-colors">
-              Persona
+              Lyra.ai
             </span>
           </Link>
 

@@ -101,7 +101,14 @@ function PersonaCard({ persona }: { persona: typeof personas.$inferSelect }) {
       {/* Avatar + name */}
       <div className="flex items-start gap-3">
         <div className="w-12 h-12 rounded-xl bg-elevated flex items-center justify-center flex-shrink-0 overflow-hidden">
-          {persona.avatarType === "avaturn" && persona.avatarUrl ? (
+          {persona.photoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={persona.photoUrl}
+              alt={persona.name}
+              className="w-full h-full object-cover rounded-full"
+            />
+          ) : persona.avatarType === "avaturn" && persona.avatarUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={persona.avatarUrl}

@@ -9,7 +9,7 @@ import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 export const metadata: Metadata = {
-  title: "Persona — Talk to your digital twin",
+  title: "Lyra.ai — Talk to your digital twin",
   description:
     "Create a consent-first voice-cloned digital persona and have natural conversations.",
   // No real favicon file yet — this valid empty-data-URI icon stops the

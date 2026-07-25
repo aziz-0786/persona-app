@@ -111,16 +111,32 @@ export default function WallpaperCall({
     <div className="fixed inset-0 overflow-hidden select-none">
       {/* ── Background layer ── */}
       {persona.photoUrl ? (
-        <div
-          className="absolute inset-0 bg-cover bg-center"
-          style={{ backgroundImage: `url(${persona.photoUrl})` }}
-        />
+        <>
+          {/* Layer 1: Blurred version of the photo fills the entire screen.
+              This prevents empty bars on the sides for portrait photos on desktop. */}
+          <div
+            className="absolute inset-0 bg-cover bg-center scale-110"
+            style={{
+              backgroundImage: `url(${persona.photoUrl})`,
+              filter: "blur(24px)",
+            }}
+          />
+          {/* Layer 2: Extra dark tint over the blurred fill */}
+          <div className="absolute inset-0 bg-black/40" />
+          {/* Layer 3: The actual photo, contained (no crop), centered.
+              On mobile: fills the screen nicely (portrait = portrait, mostly matches).
+              On desktop: shows the full person with blurred fill on the sides. */}
+          <div
+            className="absolute inset-0 bg-contain bg-center bg-no-repeat"
+            style={{ backgroundImage: `url(${persona.photoUrl})` }}
+          />
+        </>
       ) : (
         <div className={`absolute inset-0 bg-gradient-to-br ${gradient}`} />
       )}
 
       {/* ── Dark veil ── */}
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-[3px]" />
+      <div className="absolute inset-0 bg-black/30" />
 
       {/* ── Content ── */}
       <div className="relative z-10 flex flex-col h-full">
