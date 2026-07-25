@@ -50,6 +50,9 @@ const config: Config = {
         "pulse-slow": "pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite",
         "breath": "breath 4s ease-in-out infinite",
         "ring-listening": "ring-listening 0.8s ease-in-out infinite",
+        "waveform-speak": "waveformSpeak 0.6s ease-in-out infinite",
+        "waveform-think": "waveformThink 1.4s ease-in-out infinite",
+        "waveform-listen": "waveformListen 1.8s ease-in-out infinite",
       },
       keyframes: {
         breath: {
@@ -59,6 +62,18 @@ const config: Config = {
         "ring-listening": {
           "0%, 100%": { transform: "scale(1)", opacity: "0.8" },
           "50%": { transform: "scale(1.06)", opacity: "1" },
+        },
+        waveformSpeak: {
+          "0%, 100%": { transform: "scaleY(0.3)" },
+          "50%": { transform: "scaleY(1)" },
+        },
+        waveformThink: {
+          "0%, 100%": { transform: "scaleY(0.4)" },
+          "50%": { transform: "scaleY(0.6)" },
+        },
+        waveformListen: {
+          "0%, 100%": { transform: "scaleY(0.25)" },
+          "50%": { transform: "scaleY(0.45)" },
         },
       },
     },

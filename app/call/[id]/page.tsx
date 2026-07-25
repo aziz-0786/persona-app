@@ -1,17 +1,14 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
-import dynamic from "next/dynamic";
-import { Mic, MicOff, PhoneOff, Zap } from "lucide-react";
-import { cn, EMOTION_EMOJI, formatDuration } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { usePersona } from "@/lib/hooks";
 import { decodeB64ToAudioBuffer, createAudioQueue, extractClauses, type AudioQueue } from "@/lib/audio";
+import WallpaperCall from "@/components/WallpaperCall";
 
-// TalkingHead.js touches WebGL/canvas at load time — must never run during
-// SSR.
-const Avatar3D = dynamic(() => import("@/components/Avatar3D"), { ssr: false });
-
-// No TS types ship for the TalkingHead instance (see components/Avatar3D.tsx).
+// No TS types ship for the TalkingHead instance — headRef/onBuffer lip-sync
+// wiring is now dead now that Avatar3D is gone, but harmless to leave typed
+// this way if it's ever reconnected to a future video-avatar element.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type TalkingHeadInstance = any;
 
@@ -641,179 +638,37 @@ export default function CallPage() {
   // loads (see the useEffect above) and holds here until it settles, so the
   // RunPod worker is already warm by the time the user reaches the mic
   // button — no navigation, no reload, the conditional just disappears once
-  // warmupDone flips true and the user taps through. Avatar3D lives in ONE
-  // place below (in the always-mounted main UI) — it never unmounts across
-  // the warmup transition, so the GLB load isn't restarted. The overlay
-  // just sits on top (z-10) and disappears once userTapped; the main UI
-  // underneath is toggled invisible/block via CSS only, never removed from
-  // the tree, so its layout/WebGL sizing stays intact the whole time.
+  // warmupDone flips true and the user taps through. WallpaperCall lives in
+  // ONE place below (in the always-mounted main UI) — it never unmounts
+  // across the warmup transition. The overlay just sits on top (z-10) and
+  // disappears once userTapped; the main UI underneath is toggled
+  // invisible/block via CSS only, never removed from the tree.
+  //
+  // WallpaperCall replaces the old custom top bar/avatar/transcript/controls
+  // /latency-overlay markup wholesale — it's a self-contained fixed
+  // full-screen call UI with its own equivalents of most of that. Two
+  // things it doesn't have a slot for and are therefore no longer shown:
+  // the mute button and the micError banner (isMuted/toggleMute/micError
+  // state all still exist and work, just aren't surfaced in this UI).
+  const combinedLatencyMs = (sttMs ?? 0) + (llmMs ?? 0) + (ttsMs ?? 0);
+
   return (
     <div className="relative h-screen w-screen overflow-hidden">
-      <div className={cn("h-screen w-screen bg-void flex flex-col overflow-hidden", !warmupDone && "invisible")}>
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-border/40">
-        <div className="flex items-center gap-3">
-          <div
-            className={cn("w-2 h-2 rounded-full", {
-              "bg-text-muted": state === "idle",
-              "bg-accent animate-pulse": state === "listening",
-              "bg-warning animate-pulse-slow": state === "thinking",
-              "bg-success animate-pulse": state === "speaking",
-            })}
-          />
-          <span className="font-display font-semibold text-text-primary">
-            {personaName}
-          </span>
-          {emotion && (
-            <span className="text-xs bg-elevated border border-border rounded-full px-2 py-0.5 text-text-secondary">
-              {EMOTION_EMOJI[emotion] ?? "😌"} {emotion}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-mono text-text-muted">
-            {formatDuration(elapsed)}
-          </span>
-          <button
-            onClick={() => setShowLatency(!showLatency)}
-            className="p-1.5 rounded-lg hover:bg-elevated text-text-muted hover:text-text-secondary transition-colors"
-            title="Toggle latency overlay"
-          >
-            <Zap size={14} />
-          </button>
-        </div>
-      </div>
-
-      {micError && (
-        <div className="mx-5 mt-3 px-3 py-2 rounded-lg bg-error/10 border border-error/30 text-error text-xs text-center">
-          {micError}
-        </div>
-      )}
-
-      {/* Avatar area */}
-      <div className="flex-1 flex flex-col items-center justify-center gap-4 relative">
-        {/* Avatar container with state ring */}
-        <div className="relative">
-          <div
-            className={cn(
-              "w-52 h-52 lg:w-64 lg:h-64 rounded-full overflow-hidden bg-elevated border-4 border-surface transition-all duration-300",
-              {
-                "ring-idle":      state === "idle",
-                "ring-listening": state === "listening",
-                "ring-thinking":  state === "thinking",
-                "ring-speaking":  state === "speaking",
-              }
-            )}
-            id="avatar-container"
-          >
-            <div className="relative w-[280px] h-[280px] mx-auto rounded-full overflow-hidden">
-              <Avatar3D
-                avatarUrl={persona?.avatarUrl || ""}
-                emotion={emotion}
-                onReady={(head) => {
-                  headRef.current = head;
-                }}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Transcript area */}
-        <div className="text-center px-6 space-y-1 min-h-[3rem]">
-          {lastAssistantText && (
-            <p className="text-sm text-text-primary max-w-md mx-auto line-clamp-2">
-              &ldquo;{lastAssistantText}&rdquo;
-            </p>
-          )}
-          {state === "listening" && interimText ? (
-            <p className="text-xs text-text-muted italic max-w-sm mx-auto truncate">
-              {interimText}
-            </p>
-          ) : (
-            lastUserText && (
-              <p className="text-xs text-text-muted max-w-sm mx-auto truncate">
-                You: {lastUserText}
-              </p>
-            )
-          )}
-        </div>
-
-        {/* State label */}
-        <p className="text-xs font-medium text-text-muted tracking-wide uppercase">
-          {state === "idle"      && "Click to speak"}
-          {state === "listening" && "Listening... (click to stop)"}
-          {state === "thinking"  && "..."}
-          {state === "speaking"  && `${personaName} is speaking`}
-        </p>
-      </div>
-
-      {/* Controls */}
-      <div className="flex items-center justify-center gap-6 pb-10 px-5">
-        {/* Mute */}
-        <button
-          onClick={toggleMute}
-          className={cn(
-            "w-12 h-12 rounded-full flex items-center justify-center border transition-colors",
-            isMuted
-              ? "bg-error/10 border-error/30 text-error"
-              : "bg-elevated border-border text-text-secondary hover:text-text-primary"
-          )}
-        >
-          {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-        </button>
-
-        {/* Click-to-toggle mic (main button) */}
-        <button
-          onClick={handleMicClick}
-          disabled={isMuted || state === "thinking" || state === "speaking"}
-          className={cn(
-            "w-20 h-20 rounded-full flex items-center justify-center border-2 transition-all duration-150 select-none touch-none active:scale-95",
-            state === "listening"
-              ? "bg-accent border-accent shadow-glow scale-105"
-              : state !== "idle"
-              ? "bg-elevated border-border opacity-50 cursor-not-allowed"
-              : "bg-elevated border-border hover:border-accent/50 hover:bg-elevated"
-          )}
-        >
-          <Mic
-            size={28}
-            className={state === "listening" ? "text-white" : "text-text-secondary"}
-          />
-        </button>
-
-        {/* End call */}
-        <button
-          onClick={() => endCall()}
-          className="w-12 h-12 rounded-full flex items-center justify-center bg-error/10 border border-error/30 text-error hover:bg-error/20 transition-colors"
-        >
-          <PhoneOff size={18} />
-        </button>
-      </div>
-
-      {/* Latency overlay */}
-      {showLatency && (
-        <div className="fixed bottom-28 left-4 bg-surface border border-border rounded-xl p-3 space-y-1 font-mono text-xs">
-          <div className="text-text-muted text-[10px] uppercase font-medium mb-1">Latency</div>
-          <div className="flex justify-between gap-4">
-            <span className="text-text-muted">STT</span>
-            <span className={sttMs ? "text-success" : "text-text-muted"}>
-              {sttMs ? `${sttMs}ms` : "—"}
-            </span>
-          </div>
-          <div className="flex justify-between gap-4">
-            <span className="text-text-muted">LLM</span>
-            <span className={llmMs ? "text-success" : "text-text-muted"}>
-              {llmMs ? `${llmMs}ms` : "—"}
-            </span>
-          </div>
-          <div className="flex justify-between gap-4">
-            <span className="text-text-muted">TTS</span>
-            <span className={ttsMs ? "text-success" : "text-text-muted"}>
-              {ttsMs ? `${ttsMs}ms` : "—"}
-            </span>
-          </div>
-        </div>
-      )}
+      <div className={cn("h-screen w-screen", !warmupDone && "invisible")}>
+        <WallpaperCall
+          persona={{
+            name: personaName,
+            photoUrl: persona?.photoUrl,
+            relationship: persona?.relationship,
+          }}
+          state={state}
+          emotion={emotion}
+          elapsedSeconds={elapsed}
+          onMicPress={handleMicClick}
+          onMicRelease={() => {}}
+          onEndCall={endCall}
+          latencyMs={combinedLatencyMs}
+        />
       </div>
 
       {/* Warmup overlay — covers the (already-mounted) call UI until the
