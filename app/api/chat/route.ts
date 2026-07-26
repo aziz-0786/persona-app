@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import Groq from "groq-sdk";
+import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { personas, users } from "@/db/schema";
@@ -109,32 +110,93 @@ function errorStreamResponse(message: string): Response {
   ]);
 }
 
-type GroqChunk = { choices?: { delta?: { content?: string | null } }[] };
-type GroqLLMResult =
-  | { ok: true; stream: AsyncIterable<GroqChunk> }
+// Both Groq and OpenAI's streaming chat.completions emit the identical
+// `{choices: [{delta: {content}}]}` shape per chunk — Groq's SDK is a
+// deliberate OpenAI-compatible clone — so one chunk type and one downstream
+// SSE-parsing loop (below) serves both providers without any branching.
+type LLMChunk = { choices?: { delta?: { content?: string | null } }[] };
+type LLMResult =
+  | { ok: true; stream: AsyncIterable<LLMChunk>; provider: "groq" | "openai_fallback" }
   | { ok: false; message: string };
+
+const LLM_COMMON_PARAMS = {
+  max_tokens: 150,
+  temperature: 0.85,
+  top_p: 0.9,
+  stream: true as const,
+  stop: ["\n\n", "Human:", "User:", "Assistant:"],
+};
 
 // Groq's OpenAI-compatible chat.completions endpoint — hosted, always warm,
 // no cold start / max_workers concept like RunPod. Free tier: 14,400
 // req/day on llama-3.1-8b-instant.
 async function callGroqLLM(
   messages: { role: string; content: string }[]
-): Promise<GroqLLMResult> {
+): Promise<AsyncIterable<LLMChunk>> {
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  return groq.chat.completions.create({
+    model: process.env.GROQ_MODEL ?? "llama-3.1-8b-instant",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    messages: messages as any,
+    ...LLM_COMMON_PARAMS,
+  });
+}
+
+// Fallback when Groq is unset or fails — same messages array, same system
+// prompt (built once, above, before either provider is chosen).
+async function callOpenAILLM(
+  messages: { role: string; content: string }[]
+): Promise<AsyncIterable<LLMChunk>> {
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const stream = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    messages: messages as any,
+    ...LLM_COMMON_PARAMS,
+  });
+  return stream as unknown as AsyncIterable<LLMChunk>;
+}
+
+async function callLLM(
+  messages: { role: string; content: string }[]
+): Promise<LLMResult> {
+  const useGroq = !!process.env.GROQ_API_KEY;
+
+  if (useGroq) {
+    try {
+      const stream = await callGroqLLM(messages);
+      console.log("[LLM] Provider: groq");
+      return { ok: true, stream, provider: "groq" };
+    } catch (err) {
+      // Falls back on any Groq failure (429 rate limit, network/timeout
+      // error, or anything else) rather than narrowly whitelisting error
+      // types — a stricter allowlist risks silently not falling back on a
+      // transient failure shape that wasn't anticipated.
+      console.warn(
+        "[LLM] Groq unavailable, falling back to OpenAI:",
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  if (!process.env.OPENAI_API_KEY) {
+    return {
+      ok: false,
+      message: useGroq
+        ? "Groq failed and OPENAI_API_KEY is not configured — no fallback available."
+        : "Neither GROQ_API_KEY nor OPENAI_API_KEY is configured.",
+    };
+  }
+
   try {
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    const stream = await groq.chat.completions.create({
-      model: process.env.GROQ_MODEL ?? "llama-3.1-8b-instant",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messages: messages as any,
-      max_tokens: 150,
-      temperature: 0.85,
-      top_p: 0.9,
-      stream: true,
-      stop: ["\n\n", "Human:", "User:", "Assistant:"],
-    });
-    return { ok: true, stream };
+    const stream = await callOpenAILLM(messages);
+    console.log("[LLM] Provider: openai_fallback");
+    return { ok: true, stream, provider: "openai_fallback" };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : "Unknown error calling Groq" };
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : "Unknown error calling OpenAI fallback",
+    };
   }
 }
 
@@ -181,18 +243,20 @@ export async function POST(req: NextRequest) {
   ];
 
   // Offline dev mode: set RUNPOD_OFFLINE=true to develop against the canned
-  // stub response without spending Groq requests, or as a fallback when
-  // GROQ_API_KEY isn't configured yet.
-  const useStub = !process.env.GROQ_API_KEY || process.env.RUNPOD_OFFLINE === "true";
+  // stub response without spending LLM requests, or as a last resort when
+  // neither GROQ_API_KEY nor OPENAI_API_KEY is configured yet.
+  const useStub =
+    (!process.env.GROQ_API_KEY && !process.env.OPENAI_API_KEY) ||
+    process.env.RUNPOD_OFFLINE === "true";
 
   if (useStub) {
     return stubStreamResponse();
   }
 
-  const result = await callGroqLLM(messages);
+  const result = await callLLM(messages);
 
   if (!result.ok) {
-    console.error("Groq LLM error:", result.message);
+    console.error("[LLM] both providers failed:", result.message);
     return errorStreamResponse(result.message);
   }
 
