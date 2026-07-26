@@ -4,6 +4,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { Card } from "@/components/ui";
 import { CHATTERBOX_PRESETS } from "@/lib/utils";
 import { DeleteAccountButton } from "@/components/DeleteAccountButton";
+import { SignOutButton } from "@/components/SignOutButton";
 
 export default async function SettingsPage() {
   const session = await auth();
@@ -76,10 +77,13 @@ export default async function SettingsPage() {
             Account
           </h2>
           <Card>
-            <div className="space-y-2">
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-text-primary">Email</span>
                 <span className="text-sm text-text-muted">{session.user.email}</span>
+              </div>
+              <div className="pt-2 border-t border-border">
+                <SignOutButton />
               </div>
             </div>
           </Card>
