@@ -61,6 +61,14 @@ def handler(job):
     job_id = job.get("id", "unknown")
     job_input = job.get("input", {})
 
+    # ── WARMUP MODE: confirms the worker is alive without running any
+    # inference — no voice_b64 needed, zero generation cost. Must stay
+    # before every other check below (voice_b64 parsing, decode, ffmpeg,
+    # model.generate) since none of that is relevant to a warmup ping.
+    if job_input.get("mode") == "warmup":
+        logger.info(f"[{job_id}] Warmup ping — worker alive, no inference run")
+        return {"status": "warm", "audio_base64": None}
+
     text = job_input.get("text", "Hello, world!")
     voice_b64 = job_input.get("voice_b64", "")
     exaggeration = float(job_input.get("exaggeration", 0.5))
