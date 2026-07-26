@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { usePersona } from "@/lib/hooks";
 import { decodeB64ToAudioBuffer, createAudioQueue, extractClauses, type AudioQueue } from "@/lib/audio";
 import WallpaperCall from "@/components/WallpaperCall";
+import { useFillerAudio } from "@/hooks/useFillerAudio";
 
 // No TS types ship for the TalkingHead instance — headRef/onBuffer lip-sync
 // wiring is now dead now that Avatar3D is gone, but harmless to leave typed
@@ -38,6 +39,7 @@ export default function CallPage() {
   const router = useRouter();
   const { persona } = usePersona(personaId);
   const personaName = persona?.name ?? "...";
+  const fillerAudio = useFillerAudio(persona?.fillerAudioJson ?? null);
 
   const [state, setState] = useState<ConvState>("idle");
   const [emotion, setEmotion] = useState("calm");
@@ -186,6 +188,23 @@ export default function CallPage() {
     let voiceMissing = false;
     let anyClauseAttempted = false;
     let ttsChain: Promise<void> = Promise.resolve();
+    let fillerStopped = false;
+
+    function stopFillerOnce() {
+      if (fillerStopped) return;
+      fillerStopped = true;
+      fillerAudio.stopFiller();
+    }
+
+    // Filler only plays if the LLM is still "thinking" 300ms after this
+    // turn started — a fast (<300ms) response never triggers it at all,
+    // since fillerStopped/turnIdRef staleness both gate this callback the
+    // same way real audio does.
+    setTimeout(() => {
+      if (turnIdRef.current === myTurnId && !fillerStopped) {
+        fillerAudio.playFiller();
+      }
+    }, 300);
 
     function flushClause(clauseText: string) {
       const clause = clauseText.trim();
@@ -222,6 +241,7 @@ export default function CallPage() {
         const queue = getAudioQueue();
         if (!firstAudioSeen) {
           firstAudioSeen = true;
+          stopFillerOnce(); // before real audio starts, per useFillerAudio's contract
           setTtsMs(Date.now() - turnStart);
           setConvState("speaking");
           // Barge-in is intentionally not supported (see the state gate in
@@ -312,6 +332,7 @@ export default function CallPage() {
       // if audio never actually started (e.g. TTS failed, or no voice ref).
       ttsChain.then(() => {
         if (turnIdRef.current === myTurnId && !firstAudioSeen) {
+          stopFillerOnce(); // no real audio ever came — also cancels a still-pending delayed playFiller()
           setConvState("idle");
           sendAudioRef.current = false;
           if (anyClauseAttempted) {
@@ -324,6 +345,7 @@ export default function CallPage() {
       if (err instanceof Error && err.name === "AbortError") return; // interrupted or superseded
       console.error("[TURN] submitTurn failed:", err);
       if (turnIdRef.current === myTurnId) {
+        stopFillerOnce();
         setLastAssistantText("Something went wrong. Try again.");
         setConvState("idle");
         sendAudioRef.current = false;

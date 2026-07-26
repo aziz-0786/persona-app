@@ -8,6 +8,7 @@ import { usePersona } from "@/lib/hooks";
 import { decodeB64ToAudioBuffer, createAudioQueue, extractClauses, type AudioQueue } from "@/lib/audio";
 import { Send, Volume2, Phone, Loader2, ChevronLeft } from "lucide-react";
 import Link from "next/link";
+import { useFillerAudio } from "@/hooks/useFillerAudio";
 
 type Message = {
   id: string;
@@ -45,6 +46,7 @@ const CLIENT_TIMEOUT_MS = 90_000;
 export default function ChatPage() {
   const { id: personaId } = useParams<{ id: string }>();
   const { persona } = usePersona(personaId);
+  const fillerAudio = useFillerAudio(persona?.fillerAudioJson ?? null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -360,6 +362,7 @@ export default function ChatPage() {
   // audio to fall back on.
   async function playAudio(msg: Message) {
     if (playingId === msg.id) return;
+    fillerAudio.playFiller();
 
     // Interrupt anything else in flight — a manual Play/Retry always wins.
     activeStreamIdRef.current = null;
@@ -373,6 +376,7 @@ export default function ChatPage() {
       patchMessage(msg.id, { ttsLoading: false });
 
       if ("error" in result) {
+        fillerAudio.stopFiller();
         patchMessage(msg.id, { ttsError: result.error || "Playback failed", ttsFailed: true });
         return;
       }
@@ -385,6 +389,7 @@ export default function ChatPage() {
 
       const audioUrl = `data:audio/wav;base64,${audioB64}`;
       const audio = new Audio(audioUrl);
+      fillerAudio.stopFiller(); // before starting real audio playback
       await new Promise<void>((resolve, reject) => {
         audio.onended = () => resolve();
         audio.onerror = (e) => reject(new Error(`Audio decode error: ${e}`));

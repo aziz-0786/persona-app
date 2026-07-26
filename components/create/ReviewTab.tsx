@@ -36,6 +36,10 @@ export function ReviewTab({ persona, patchPersona }: TabProps) {
       if (cardText !== persona.characterCardText) {
         await patchPersona({ characterCardText: cardText });
       }
+      // Fire-and-forget — not awaited, must not delay getting to the
+      // dashboard. 15 sequential TTS calls can take a while, especially on
+      // a cold RunPod worker.
+      fetch(`/api/persona/${persona.id}/generate-fillers`, { method: "POST" }).catch(() => {});
       router.push("/");
     } finally {
       setApproving(false);
