@@ -17,14 +17,28 @@ export function useWarmupManager() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pausedRef = useRef(false);
   const destroyedRef = useRef(false);
+  // Ref, not module-level — a module-level flag would be shared across every
+  // component instance (and survive HMR reloads in dev) instead of tracking
+  // this one manager's in-flight ping.
+  const isPingingRef = useRef(false);
 
   const enabled = process.env.NEXT_PUBLIC_WARMUP_ENABLED === "true";
 
-  const ping = useCallback(() => {
+  const ping = useCallback(async () => {
+    // A cold RunPod boot can take much longer than the 50s interval — without
+    // this, pings stack up indefinitely, each one a fresh fetch racing the
+    // last. Skip this tick entirely if the previous ping hasn't resolved yet.
+    if (isPingingRef.current) return;
+    isPingingRef.current = true;
     try {
-      fetch("/api/warmup-runpod", { method: "POST" }).catch(() => {});
+      await fetch("/api/warmup-runpod", {
+        method: "POST",
+        signal: AbortSignal.timeout(8000),
+      });
     } catch {
       // Never throw — a failed warmup ping must never break the app.
+    } finally {
+      isPingingRef.current = false;
     }
   }, []);
 

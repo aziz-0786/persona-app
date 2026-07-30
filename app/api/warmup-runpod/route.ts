@@ -13,6 +13,14 @@ export async function POST() {
     return NextResponse.json({ status: "offline" });
   }
 
+  // A cold RunPod worker can take far longer than this to actually finish
+  // booting — this timeout only bounds how long THIS route waits before
+  // giving up on the ping request itself, so the client's own 8s fetch
+  // timeout (see useWarmupManager.ts) isn't left waiting on a route that's
+  // still blocked on a RunPod request that will never return in time.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
+
   try {
     // handler.py's warmup-mode shortcut (see runpod-worker/handler.py)
     // returns immediately without touching the model — this call exists
@@ -24,11 +32,16 @@ export async function POST() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ input: { mode: "warmup" } }),
+      signal: controller.signal,
     });
+    return NextResponse.json({ status: "warm" }, { status: 200 });
   } catch (err) {
-    // Never block the caller on a warmup failure — log and move on.
+    // Never block the caller on a warmup failure — log and move on. Always
+    // 200 regardless of cause (timeout or any other error) — this route's
+    // whole contract is "never block, never fail the caller."
     console.warn("[warmup-runpod] ping failed:", err instanceof Error ? err.message : err);
+    return NextResponse.json({ status: "warming" }, { status: 200 });
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return NextResponse.json({ status: "pinged" }, { status: 200 });
 }

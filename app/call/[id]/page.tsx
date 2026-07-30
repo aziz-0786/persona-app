@@ -17,15 +17,16 @@ type ConvState = "idle" | "listening" | "thinking" | "speaking";
 type HistoryTurn = { role: "user" | "assistant"; content: string };
 
 // nova-3 + interim results for live captions, smart_format for punctuation,
-// endpointing=500 so Deepgram finalizes ~500ms after the speaker stops
-// (was 300ms — too eager, cut sentences off mid-thought). utterance_end_ms=1500
-// additionally waits for 1.5s of silence before emitting an UtteranceEnd,
+// endpointing=1500 so Deepgram finalizes ~1.5s after the speaker stops
+// (was 300ms, then 500ms, then 800ms — still too eager, cutting submission
+// during natural mid-sentence breathing pauses). utterance_end_ms=2000
+// additionally waits for 2s of silence before emitting an UtteranceEnd,
 // giving a second, more patient signal for natural pauses.
 // No `encoding`/`sample_rate` param — MediaRecorder's webm/opus container is
 // auto-detected by Deepgram from the stream header, so raw Blob chunks can
 // be sent as-is.
 const DEEPGRAM_WS_URL =
-  "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&smart_format=true&endpointing=500&utterance_end_ms=1500";
+  "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&smart_format=true&endpointing=1500&utterance_end_ms=2000";
 
 // Deepgram closes a connection after ~10-12s with no data at all. Idle
 // (waiting for push-to-talk) and thinking (LLM+TTS running) can both last
@@ -103,11 +104,32 @@ export default function CallPage() {
   // Latest interim transcript while listening — used as a fallback if
   // Deepgram never sends a final after CloseStream (see handleMicClick).
   const accTranscriptRef = useRef("");
+  // True from the moment the user clicks to stop talking (state moves to
+  // "thinking" immediately, by design) until Deepgram's one remaining final
+  // for that utterance is handled. The "must be listening" gate below is
+  // for anti-echo (rejecting a final that shows up while the persona is
+  // speaking or otherwise idle) — it is NOT a valid test for "is this the
+  // final we're expecting," since the click-to-stop transition always
+  // leaves "listening" before that final ever arrives. Without this
+  // separate flag, the real final and the 800ms accumulator fallback both
+  // get rejected every time, and no turn ever completes.
+  const awaitingFinalRef = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
   const didInitRef = useRef(false);
   const deepgramCancelledRef = useRef(false);
   const micInitPromiseRef = useRef<Promise<void> | null>(null);
   const headRef = useRef<TalkingHeadInstance>(null);
+
+  // Without this, llmAbortRef/ttsAbortRef start out null and the very first
+  // submitTurn() call logs "llmAbort signals: undefined" — the abort-before-
+  // new-turn calls (`llmAbortRef.current?.abort()`) silently no-op on a null
+  // ref, which is harmless the first time but leaves the initial state
+  // inconsistent with every turn after it (which always has a real
+  // controller to abort).
+  useEffect(() => {
+    llmAbortRef.current = new AbortController();
+    ttsAbortRef.current = new AbortController();
+  }, []);
 
   function getAudioContext(): AudioContext {
     if (!audioCtxRef.current) {
@@ -140,9 +162,11 @@ export default function CallPage() {
 
   // ── Turn pipeline: /api/chat SSE → clause splitter → /api/tts → audio queue
   async function submitTurn(transcript: string) {
+    if (!transcript || !transcript.trim()) {
+      setConvState("listening");
+      return;
+    }
     const trimmed = transcript.trim();
-    if (!trimmed) return;
-    console.log("[TURN] submitting:", trimmed);
 
     const myTurnId = ++turnIdRef.current;
     const myLlmController = new AbortController();
@@ -154,6 +178,11 @@ export default function CallPage() {
       // both its LLM stream and its TTS fetches are stale now.
       llmAbortRef.current?.abort();
       ttsAbortRef.current?.abort();
+      // Small yield to let abort propagate (in-flight fetch catch blocks /
+      // AbortError early-returns) before this turn's own work begins —
+      // otherwise an echo-triggered turn can start running its own
+      // fetch/TTS chain in parallel with the turn it just superseded.
+      await new Promise((resolve) => setTimeout(resolve, 10));
       llmAbortRef.current = myLlmController;
       ttsAbortRef.current = myTtsController;
 
@@ -189,6 +218,10 @@ export default function CallPage() {
     let anyClauseAttempted = false;
     let ttsChain: Promise<void> = Promise.resolve();
     let fillerStopped = false;
+    // Guards against AudioQueue.onended firing more than once for the same
+    // turn (observed as two consecutive "onComplete fired" logs) — without
+    // this, the idle transition below could run twice for one turn.
+    let completeFired = false;
 
     function stopFillerOnce() {
       if (fillerStopped) return;
@@ -250,8 +283,11 @@ export default function CallPage() {
           // transcript arriving during it, and forwarding it anyway is
           // exactly what let TTS echo reach Deepgram in the first place.
           queue.onended(() => {
+            if (completeFired) return;
+            completeFired = true;
             if (turnIdRef.current !== myTurnId) return;
             setConvState("idle");
+            stateRef.current = "idle";
             sendAudioRef.current = false;
           });
         }
@@ -387,9 +423,8 @@ export default function CallPage() {
         }
 
         // Only Results messages carry a transcript — Metadata, UtteranceEnd,
-        // etc. are logged (for visibility) but never reach submitTurn.
+        // etc. never reach submitTurn.
         if (msg.type !== "Results") {
-          console.log("[DG] non-Results message:", msg.type);
           return;
         }
 
@@ -404,8 +439,6 @@ export default function CallPage() {
           return;
         }
 
-        console.log("[DG] FINAL transcript:", transcript, "state:", stateRef.current);
-
         // *** THE CRITICAL GATE ***
         // The persona's own TTS audio can leak back into the mic (no
         // headphones, speaker bleed) while sendAudioRef is on. It used to be
@@ -414,25 +447,60 @@ export default function CallPage() {
         // while still "thinking"/"speaking", aborting the in-flight TTS,
         // producing no audio, tripping the stuck-in-thinking timeout, and
         // getting resubmitted again on the next echo — a self-sustaining
-        // loop. Only a final that arrives while genuinely "listening" (the
-        // user explicitly clicked to talk) is trusted now; barge-in is
-        // removed as the trade-off for not looping on echo.
-        if (stateRef.current !== "listening") {
-          console.log("[DG] ignoring final — state is", stateRef.current, "not listening");
+        // loop. barge-in is removed as the trade-off for not looping on echo.
+        //
+        // "listening" alone is NOT sufficient here: handleMicClick's
+        // click-to-stop moves state to "thinking" the instant the user
+        // clicks, before Deepgram's one remaining final for that utterance
+        // ever arrives — so requiring "listening" rejects every legitimate
+        // final too. awaitingFinalRef tracks "we're expecting exactly one
+        // more final for the utterance we just stopped," independent of
+        // ConvState, so a genuine final is trusted even though state has
+        // already moved on, while a stray echo final (awaitingFinalRef
+        // false) is still rejected.
+        if (stateRef.current !== "listening" && !awaitingFinalRef.current) {
           return;
         }
+        awaitingFinalRef.current = false;
 
-        if (!transcript.trim()) return;
+        const cleaned = transcript.trim();
+        if (!cleaned) {
+          return;
+        }
         accTranscriptRef.current = "";
-        submitTurn(transcript.trim());
+        submitTurn(cleaned);
       };
       // Without this, a transient WS error (e.g. a brief handshake hiccup)
       // leaves micError stuck true forever — there was no path back to null,
       // permanently disabling the mic button for the rest of the session.
-      ws.onopen = () => setMicError(null);
+      ws.onopen = () => {
+        setMicError(null);
+        // Covers the mic-click reconnect path in handleMicClick: state was
+        // already set to "listening" before this new socket was ready
+        // (the WS was closed from a long TTS/RunPod cold start outlasting
+        // Deepgram's idle timeout), so the mic needs to be armed here
+        // instead of at the click site.
+        if (stateRef.current === "listening" && micStreamRef.current) {
+          sendAudioRef.current = true;
+          console.log('[WS onopen] mic armed after reconnect');
+        }
+      };
       ws.onerror = () => setMicError("Speech recognition connection error");
       wsRef.current = ws;
 
+      ws.onclose = () => {
+        if (keepAliveIntervalRef.current) {
+          clearInterval(keepAliveIntervalRef.current);
+          keepAliveIntervalRef.current = null;
+        }
+      };
+
+      // Guards against a leaked interval on reconnect — connectDeepgram()
+      // can now be called more than once per call session (see the
+      // auto-listen reconnect above), and without clearing the previous
+      // interval first, each reconnect would leave an orphaned one running
+      // forever alongside the new one.
+      if (keepAliveIntervalRef.current) clearInterval(keepAliveIntervalRef.current);
       keepAliveIntervalRef.current = setInterval(() => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(JSON.stringify({ type: "KeepAlive" }));
@@ -460,6 +528,11 @@ export default function CallPage() {
         : "audio/webm";
       const recorder = new MediaRecorder(stream, { mimeType });
       recorder.ondataavailable = (e) => {
+        // sendAudioRef is already false throughout "thinking"/"speaking" by
+        // design (see its declaration above), so this is belt-and-suspenders
+        // against the persona's own voice ever reaching Deepgram — not the
+        // primary gate.
+        if (stateRef.current === "speaking") return;
         if (e.data.size > 0 && sendAudioRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(e.data);
         }
@@ -500,7 +573,9 @@ export default function CallPage() {
       setConvState("speaking");
       sendAudioRef.current = false;
       const queue = getAudioQueue();
-      queue.onended(() => setConvState("idle"));
+      queue.onended(() => {
+        setConvState("idle");
+      });
       queue.add(buf);
     } catch (e) {
       console.warn("[WARMUP] greeting play failed:", e);
@@ -595,7 +670,7 @@ export default function CallPage() {
   }
 
   // Click-to-toggle: first click starts listening, second click stops
-  // sending audio and lets Deepgram's endpointing (500ms) finalize the
+  // sending audio and lets Deepgram's endpointing (800ms) finalize the
   // utterance. Ignored while a response is in flight ("thinking"/"speaking")
   // — not while "idle", since that's the state the first click must act on.
   async function handleMicClick() {
@@ -605,6 +680,11 @@ export default function CallPage() {
     if (currentState === "listening") {
       sendAudioRef.current = false;
       setConvState("thinking");
+      // We're now expecting exactly one more final from Deepgram for the
+      // utterance that was just stopped — state itself already left
+      // "listening" above, so this is the only remaining signal that lets
+      // the DG handler (and the fallback below) still trust that final.
+      awaitingFinalRef.current = true;
 
       // Prompt Deepgram to flush/finalize now rather than waiting purely on
       // the passive absence-of-audio endpointing heuristic.
@@ -617,12 +697,19 @@ export default function CallPage() {
       // whatever the last interim transcript was instead of hanging in
       // "thinking" forever.
       setTimeout(() => {
-        if (stateRef.current === "thinking" && accTranscriptRef.current.trim()) {
-          console.log("[TURN] submitting from accumulator:", accTranscriptRef.current);
-          const fallbackTranscript = accTranscriptRef.current;
-          accTranscriptRef.current = "";
-          submitTurn(fallbackTranscript);
-        }
+        // This timer is the "Deepgram never finalized" fallback for the
+        // exact utterance the click above just stopped — awaitingFinalRef
+        // is still true unless the real final already arrived and cleared
+        // it (in which case this whole timer is redundant and must not
+        // replay stale audio on top of a turn that's already running).
+        if (!awaitingFinalRef.current) return;
+        awaitingFinalRef.current = false;
+
+        if (!accTranscriptRef.current.trim()) return;
+
+        const fallbackTranscript = accTranscriptRef.current;
+        accTranscriptRef.current = "";
+        submitTurn(fallbackTranscript);
       }, 800);
       return;
     }
@@ -633,16 +720,24 @@ export default function CallPage() {
     sttStartRef.current = Date.now();
     setInterimText("");
     accTranscriptRef.current = "";
+    awaitingFinalRef.current = false;
     setMicError(null);
     setConvState("listening");
 
-    await ensureMicReady();
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      // WS closed during TTS (Deepgram's own idle timeout can outlast a long
+      // RunPod cold start) — reconnect; the mic arms in onopen instead of here.
+      console.log('[MicClick] WS closed, reconnecting before listening');
+      connectDeepgram();
+    } else {
+      await ensureMicReady();
 
-    // The user may have already clicked again (or a mic error surfaced)
-    // while getUserMedia was pending — don't start forwarding audio if so.
-    const stateAfterMic = stateRef.current as ConvState;
-    if (stateAfterMic === "listening" && micStreamRef.current) {
-      sendAudioRef.current = true;
+      // The user may have already clicked again (or a mic error surfaced)
+      // while getUserMedia was pending — don't start forwarding audio if so.
+      const stateAfterMic = stateRef.current as ConvState;
+      if (stateAfterMic === "listening" && micStreamRef.current) {
+        sendAudioRef.current = true;
+      }
     }
   }
 
@@ -733,6 +828,18 @@ export default function CallPage() {
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {micError && (
+        <div style={{
+          position: 'fixed', bottom: '100px', left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#7f1d1d', color: '#fca5a5',
+          padding: '8px 16px', borderRadius: '8px',
+          fontSize: '14px', zIndex: 50
+        }}>
+          {micError}
         </div>
       )}
     </div>

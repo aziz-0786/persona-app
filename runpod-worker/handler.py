@@ -34,6 +34,14 @@ import torch
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Module-level cache: survives across multiple jobs on the same worker.
+# Stores the ALREADY-CONVERTED 16kHz mono WAV bytes (post-ffmpeg), not a
+# literal ML tensor — Chatterbox's generate() only accepts a file path for
+# audio_prompt_path, so there's no in-memory tensor to cache in the first
+# place. Caching these bytes lets a cache hit skip both the base64 decode
+# AND the ffmpeg subprocess call, writing straight to a fresh temp file.
+_voice_tensor_cache = {}  # persona_id -> converted WAV bytes
+
 # ─── Load model once at module level (not inside handler) ─────────────────────
 # This is loaded when the worker starts, not on each request.
 logger.info("Loading ChatterboxTTS model...")
@@ -69,49 +77,58 @@ def handler(job):
         logger.info(f"[{job_id}] Warmup ping — worker alive, no inference run")
         return {"status": "warm", "audio_base64": None}
 
+    persona_id = job_input.get("persona_id", "")
     text = job_input.get("text", "Hello, world!")
     voice_b64 = job_input.get("voice_b64", "")
     exaggeration = float(job_input.get("exaggeration", 0.5))
     cfg_weight = float(job_input.get("cfg_weight", 0.5))
     temperature = float(job_input.get("temperature", 0.8))
 
-    # ── GUARD: startup test with no voice reference ──────────────────────
-    # test_input.json has empty voice_b64. Return success so worker stays alive.
-    if not voice_b64 or len(voice_b64.strip().replace("=","")) < 50:
-        logger.info(f"[{job_id}] No voice reference — startup test OK")
-        return {"status": "ok", "note": "startup test passed — no voice_b64"}
-
-    # ── STRIP DATA URL PREFIX ─────────────────────────────────────────────
-    if "," in voice_b64:
-        voice_b64 = voice_b64.split(",")[1]
-
-    # ── FIX BASE64 PADDING ───────────────────────────────────────────────
-    padding_needed = (4 - len(voice_b64) % 4) % 4
-    voice_b64 += "=" * padding_needed
-
-    # ── DECODE ───────────────────────────────────────────────────────────
-    try:
-        audio_bytes = base64.b64decode(voice_b64)
-    except Exception as e:
-        logger.error(f"[{job_id}] base64 decode failed: {e}")
-        return {"error": f"Invalid base64: {e}"}
-
-    # ── DETECT FORMAT BY MAGIC BYTES ─────────────────────────────────────
-    if len(audio_bytes) < 4:
-        return {"error": "Audio data too short"}
-
-    if audio_bytes[:4] == b'RIFF':
-        src_ext = ".wav"
-    elif audio_bytes[:3] == b'OggS':
-        src_ext = ".ogg"
-    elif audio_bytes[:3] == b'ID3' or audio_bytes[:2] in (b'\xff\xfb', b'\xff\xf3'):
-        src_ext = ".mp3"
-    else:
-        src_ext = ".webm"  # Chrome default
-
-    # ── CONVERT TO 16kHz MONO WAV VIA FFMPEG ────────────────────────────
     raw_path, wav_path = None, None
-    try:
+    cached_ref_bytes = _voice_tensor_cache.get(persona_id) if persona_id else None
+
+    if cached_ref_bytes is not None:
+        # ── CACHE HIT — skip base64 decode + ffmpeg entirely ──────────────
+        logger.info(f"[{job_id}] [VoiceCache HIT] persona_id={persona_id}, skipped 4MB decode")
+        with tempfile.NamedTemporaryFile(suffix="_ref.wav", delete=False) as f:
+            f.write(cached_ref_bytes)
+            wav_path = f.name
+    else:
+        # ── GUARD: startup test with no voice reference ──────────────────────
+        # test_input.json has empty voice_b64. Return success so worker stays alive.
+        if not voice_b64 or len(voice_b64.strip().replace("=","")) < 50:
+            logger.info(f"[{job_id}] No voice reference — startup test OK")
+            return {"status": "ok", "note": "startup test passed — no voice_b64"}
+
+        # ── STRIP DATA URL PREFIX ─────────────────────────────────────────────
+        if "," in voice_b64:
+            voice_b64 = voice_b64.split(",")[1]
+
+        # ── FIX BASE64 PADDING ───────────────────────────────────────────────
+        padding_needed = (4 - len(voice_b64) % 4) % 4
+        voice_b64 += "=" * padding_needed
+
+        # ── DECODE ───────────────────────────────────────────────────────────
+        try:
+            audio_bytes = base64.b64decode(voice_b64)
+        except Exception as e:
+            logger.error(f"[{job_id}] base64 decode failed: {e}")
+            return {"error": f"Invalid base64: {e}"}
+
+        # ── DETECT FORMAT BY MAGIC BYTES ─────────────────────────────────────
+        if len(audio_bytes) < 4:
+            return {"error": "Audio data too short"}
+
+        if audio_bytes[:4] == b'RIFF':
+            src_ext = ".wav"
+        elif audio_bytes[:3] == b'OggS':
+            src_ext = ".ogg"
+        elif audio_bytes[:3] == b'ID3' or audio_bytes[:2] in (b'\xff\xfb', b'\xff\xf3'):
+            src_ext = ".mp3"
+        else:
+            src_ext = ".webm"  # Chrome default
+
+        # ── CONVERT TO 16kHz MONO WAV VIA FFMPEG ────────────────────────────
         with tempfile.NamedTemporaryFile(suffix=src_ext, delete=False) as f:
             f.write(audio_bytes)
             raw_path = f.name
@@ -126,6 +143,12 @@ def handler(job):
             logger.error(f"[{job_id}] ffmpeg failed: {result.stderr[-300:]}")
             return {"error": f"Audio conversion failed: {result.stderr[-200:]}"}
 
+        if persona_id:
+            with open(wav_path, "rb") as f:
+                _voice_tensor_cache[persona_id] = f.read()
+            logger.info(f"[{job_id}] [VoiceCache MISS] cached persona_id={persona_id}")
+
+    try:
         logger.info(f"[{job_id}] Generating: {len(text)} chars, "
                     f"exag={exaggeration}, cfg={cfg_weight}, temp={temperature}")
 

@@ -235,6 +235,18 @@ export default function WallpaperCall({
             </button>
           </div>
 
+          {state === "idle" && history && history.length > 0 && (
+            <p style={{
+              color: 'rgba(255,255,255,0.6)',
+              fontSize: '13px',
+              textAlign: 'center',
+              marginTop: '6px',
+              letterSpacing: '0.02em'
+            }}>
+              Tap to speak
+            </p>
+          )}
+
           {/* Latency overlay */}
           {latencyMs && latencyMs > 0 ? (
             <p className="text-center text-white/20 text-xs mt-3 font-mono">
