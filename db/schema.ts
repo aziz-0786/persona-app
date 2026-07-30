@@ -67,6 +67,7 @@ export const personas = pgTable("personas", {
   bioJson: json("bio_json").$type<Record<string, string>>(), // 25Q answers
   characterCardText: text("character_card_text"), // generated 300-600 token card
   voiceRefB64: text("voice_ref_b64"), // base64 encoded reference WAV
+  cartesiaVoiceId: text("cartesia_voice_id"), // Cartesia clone id, null = not yet cloned
   voiceParamsJson: json("voice_params_json").$type<{
     exaggeration: number;
     cfg_weight: number;

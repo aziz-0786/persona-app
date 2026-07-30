@@ -97,6 +97,13 @@ export async function PATCH(req: NextRequest) {
 
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
+  // A re-recorded voice reference invalidates any existing Cartesia clone —
+  // force a fresh clone on the next /api/tts call rather than continuing to
+  // speak in the old (now-stale) voice.
+  if ("voiceRefB64" in updates) {
+    updates.cartesiaVoiceId = null;
+  }
+
   const [persona] = await db
     .update(personas)
     .set({ ...updates, updatedAt: new Date() })

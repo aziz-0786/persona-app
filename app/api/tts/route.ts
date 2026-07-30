@@ -20,6 +20,129 @@ export const maxDuration = 600;
 
 const RUNPOD_TTS_URL = `https://api.runpod.ai/v2/${process.env.RUNPOD_TTS_ENDPOINT_ID}/runsync`;
 
+// ─── Cartesia ───────────────────────────────────────────────────────────────
+// Docs fetched 2026-07-28 from docs.cartesia.ai (api-reference/tts/bytes,
+// api-reference/voices/clone, use-the-api/api-conventions,
+// build-with-cartesia/tts-models/latest). See CARTESIA_MIGRATION_INFO.md.
+const CARTESIA_API_URL = "https://api.cartesia.ai";
+// Cartesia-Version — pinned to the one valid enum value for the current API
+// spec (2026-03-01), not today's date.
+const CARTESIA_VERSION = "2026-03-01";
+// "sonic-3.5" always points at the latest stable snapshot per Cartesia's
+// docs (as opposed to "sonic-latest", which is beta/unstable).
+const CARTESIA_MODEL_ID = "sonic-3.5";
+// 15s: Cartesia's documented latency is sub-90ms for TTS and clone requests
+// are typically a couple seconds — anything past 15s is a real failure, not
+// a cold start (Cartesia has no cold-start concept, unlike RunPod).
+const CARTESIA_TIMEOUT_MS = 15_000;
+
+// Cartesia's generation_config.emotion accepts many values (50+ per the
+// docs); mapped only onto the ones our existing persona-emotion vocabulary
+// already uses. speed and volume are temporarily disabled on sonic-3.5 —
+// emotion is the only generation_config field sent.
+const CARTESIA_EMOTION_MAP: Record<string, { emotion: string }> = {
+  happy: { emotion: "happy" },
+  amused: { emotion: "happy" },
+  surprised: { emotion: "surprised" },
+  sad: { emotion: "sad" },
+  calm: { emotion: "calm" },
+  thinking: { emotion: "calm" },
+  angry: { emotion: "angry" },
+  default: { emotion: "neutral" },
+};
+
+function cartesiaHeaders(extra?: Record<string, string>) {
+  return {
+    Authorization: `Bearer ${process.env.CARTESIA_API_KEY}`,
+    "Cartesia-Version": CARTESIA_VERSION,
+    ...extra,
+  };
+}
+
+// Clones a voice from the (already data-URL-stripped) reference WAV bytes.
+// Returns the new voice id, or null on any failure — callers fall back to
+// RunPod on null rather than surfacing an error, since a clone failure
+// shouldn't block TTS entirely when Chatterbox can still serve the request.
+async function cartesiaCloneVoice(personaId: string, voiceB64: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CARTESIA_TIMEOUT_MS);
+  try {
+    const wavBytes = Buffer.from(voiceB64, "base64");
+    const form = new FormData();
+    form.append("clip", new Blob([wavBytes], { type: "audio/wav" }), "reference.wav");
+    form.append("name", personaId);
+    form.append("language", "en");
+
+    const res = await fetch(`${CARTESIA_API_URL}/voices/clone`, {
+      method: "POST",
+      headers: cartesiaHeaders(), // no Content-Type — fetch sets the multipart boundary itself
+      body: form,
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("[TTS] Cartesia clone failed:", res.status, errText);
+      return null;
+    }
+
+    const data = await res.json();
+    if (!data.id) {
+      console.error("[TTS] Cartesia clone response missing id:", data);
+      return null;
+    }
+    return data.id as string;
+  } catch (err) {
+    console.error("[TTS] Cartesia clone threw:", err instanceof Error ? err.message : err);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type CartesiaTtsResult = { audio_base64: string; sample_rate: number } | { error: string };
+
+async function cartesiaTts(text: string, voiceId: string, emotion: string): Promise<CartesiaTtsResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CARTESIA_TIMEOUT_MS);
+  const sampleRate = 24000;
+  const emotionCfg = CARTESIA_EMOTION_MAP[emotion] ?? CARTESIA_EMOTION_MAP.default;
+
+  try {
+    const res = await fetch(`${CARTESIA_API_URL}/tts/bytes`, {
+      method: "POST",
+      headers: cartesiaHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model_id: CARTESIA_MODEL_ID,
+        transcript: text,
+        voice: { mode: "id", id: voiceId },
+        // WAV/pcm_s16le — a container decodeAudioData can parse client-side,
+        // matching the RunPod path's own WAV output exactly.
+        output_format: { container: "wav", encoding: "pcm_s16le", sample_rate: sampleRate },
+        generation_config: { emotion: emotionCfg.emotion },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("[TTS] Cartesia TTS call failed:", res.status, errText);
+      return { error: `TTS unavailable — Cartesia returned ${res.status}` };
+    }
+
+    const bytes = await res.arrayBuffer();
+    const audio_base64 = Buffer.from(bytes).toString("base64");
+    return { audio_base64, sample_rate: sampleRate };
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.name === "AbortError";
+    const reason = isTimeout ? `timed out after ${CARTESIA_TIMEOUT_MS}ms` : err instanceof Error ? err.message : "network error";
+    console.error("[TTS] Cartesia TTS call threw:", reason);
+    return { error: `TTS unavailable — ${reason}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user) {
@@ -37,21 +160,110 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing personaId or text" }, { status: 400 });
   }
 
-  // Load persona voice ref (verify ownership)
-  const [persona] = await db
-    .select({ voiceRefB64: personas.voiceRefB64, voiceParamsJson: personas.voiceParamsJson })
+  // Stage 1 — ownership + existence check only. Deliberately does NOT select
+  // voiceRefB64 (a multi-MB base64 column) — most calls after the first ever
+  // clone only need cartesiaVoiceId, and fetching the 4MB reference on every
+  // single request was the whole problem being fixed here.
+  const [ownership] = await db
+    .select({ cartesiaVoiceId: personas.cartesiaVoiceId })
     .from(personas)
     .where(and(eq(personas.id, personaId), eq(personas.userId, session.user.id)))
     .limit(1);
 
-  if (!persona) {
+  if (!ownership) {
     return NextResponse.json({ error: "Persona not found" }, { status: 404 });
   }
 
-  const voiceRefB64 = persona.voiceRefB64;
-  console.log("[TTS] voiceRefB64 length:", voiceRefB64?.length ?? 0);
+  const cartesiaEnabled = !!process.env.CARTESIA_API_KEY;
+  let cartesiaVoiceId = ownership.cartesiaVoiceId;
 
-  if (!voiceRefB64) {
+  // Stage 2 — only fetched when actually needed: no Cartesia clone exists
+  // yet, or Cartesia is disabled entirely (RunPod always needs the raw
+  // reference). Cached here so neither the clone path nor the RunPod
+  // fallback below re-queries if the other already loaded it.
+  let voiceStage: { voiceRefB64: string | null; voiceParamsJson: unknown } | null = null;
+
+  async function loadVoiceStage(): Promise<{ voiceRefB64: string | null; voiceParamsJson: unknown }> {
+    if (voiceStage) return voiceStage;
+    const [row] = await db
+      .select({ voiceRefB64: personas.voiceRefB64, voiceParamsJson: personas.voiceParamsJson })
+      .from(personas)
+      .where(eq(personas.id, personaId))
+      .limit(1);
+    voiceStage = { voiceRefB64: row?.voiceRefB64 ?? null, voiceParamsJson: row?.voiceParamsJson ?? null };
+    console.log("[TTS] voiceRefB64 length:", voiceStage.voiceRefB64?.length ?? 0);
+    return voiceStage;
+  }
+
+  // ── Cartesia path — primary provider when configured ────────────────────
+  // NOTE: RUNPOD_OFFLINE has no functional effect on this route today and
+  // never has (a stub short-circuit was deliberately removed previously —
+  // see the git history / comment this replaced) — preserved exactly as-is,
+  // not reintroduced here, since inventing new stub behavior would go beyond
+  // "unchanged" for the existing path.
+  if (cartesiaEnabled) {
+    if (!cartesiaVoiceId) {
+      const stage = await loadVoiceStage();
+
+      if (!stage.voiceRefB64) {
+        // Sending an empty voice_b64 fails silently on the worker side (see
+        // CLAUDE.md persona shape notes) — reject here with a clear reason.
+        return NextResponse.json(
+          { error: "No voice reference. Go to Create → Voice tab to record one." },
+          { status: 422 }
+        );
+      }
+
+      // Browser recordings/uploads can end up stored as a data URL
+      // ("data:audio/wav;base64,AAAA..."). Cartesia's clone endpoint needs
+      // the prefix stripped, same as RunPod does below.
+      let voiceB64ForClone = stage.voiceRefB64;
+      if (voiceB64ForClone.includes(",")) {
+        voiceB64ForClone = voiceB64ForClone.split(",")[1];
+      }
+
+      const newVoiceId = await cartesiaCloneVoice(personaId, voiceB64ForClone);
+      if (newVoiceId) {
+        await db.update(personas).set({ cartesiaVoiceId: newVoiceId }).where(eq(personas.id, personaId));
+        cartesiaVoiceId = newVoiceId;
+        console.log("[TTS] Cartesia clone created for persona", personaId);
+      } else {
+        // FIX 2 — a concurrent clause's clone request may have already
+        // succeeded while this one was in flight (parallel clauses for the
+        // same turn each hit this route independently) — re-check before
+        // assuming we must fall back to RunPod.
+        const [raceCheck] = await db
+          .select({ cartesiaVoiceId: personas.cartesiaVoiceId })
+          .from(personas)
+          .where(eq(personas.id, personaId))
+          .limit(1);
+        if (raceCheck?.cartesiaVoiceId) {
+          cartesiaVoiceId = raceCheck.cartesiaVoiceId;
+          console.log('[TTS] race: concurrent clone detected, using existing cartesiaVoiceId');
+        }
+        // else: clone genuinely failed and no concurrent request rescued it
+        // — cartesiaVoiceId stays null, falls through to RunPod below
+        // (graceful degradation, not a 502).
+      }
+    }
+
+    if (cartesiaVoiceId) {
+      const start = Date.now();
+      const result = await cartesiaTts(text, cartesiaVoiceId, emotion);
+      if ("error" in result) {
+        return NextResponse.json({ error: result.error }, { status: 502 });
+      }
+      console.log("[TTS] provider: cartesia, ms:", Date.now() - start);
+      return NextResponse.json(result);
+    }
+  }
+
+  // ── RunPod/Chatterbox path — fallback (or primary, if Cartesia unset) ───
+  // Reuses Stage 2 if the Cartesia block above already loaded it (clone
+  // attempted and failed); otherwise fetches it now.
+  const stage = await loadVoiceStage();
+
+  if (!stage.voiceRefB64) {
     // Sending an empty voice_b64 to RunPod fails silently on the worker side
     // (see CLAUDE.md persona shape notes) — reject here with a clear reason
     // instead.
@@ -65,14 +277,14 @@ export async function POST(req: NextRequest) {
   // ("data:audio/wav;base64,AAAA..."). Python's base64.b64decode() chokes on
   // that prefix with "Incorrect padding" — strip it before it ever reaches
   // RunPod. (Belt and suspenders: the worker also defends against this.)
-  let voiceB64 = voiceRefB64;
+  let voiceB64 = stage.voiceRefB64;
   if (voiceB64.includes(",")) {
     voiceB64 = voiceB64.split(",")[1];
   }
 
   // Resolve Chatterbox params: persona overrides > emotion preset > default
   const emotionPreset = CHATTERBOX_PRESETS[emotion] ?? CHATTERBOX_PRESETS.default;
-  const personaParams = (persona.voiceParamsJson ?? {}) as Partial<typeof emotionPreset>;
+  const personaParams = (stage.voiceParamsJson ?? {}) as Partial<typeof emotionPreset>;
   const params = { ...emotionPreset, ...personaParams };
 
   // Offline/stub short-circuit removed — TTS always calls RunPod now,
@@ -105,10 +317,11 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         input: {
           text,
-          voice_b64: voiceB64,
+          persona_id: personaId,
           exaggeration: params.exaggeration,
           cfg_weight: params.cfg_weight,
           temperature: params.temperature,
+          voice_b64: voiceB64,
         },
       }),
       signal: controller.signal,
