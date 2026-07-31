@@ -3,9 +3,55 @@ import Groq from "groq-sdk";
 import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { personas, users } from "@/db/schema";
+import { personas, users, chatMessages, pinnedMemories } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { queryMemories } from "@/lib/pinecone";
+import { detectAutoPin } from "@/lib/auto-pin";
+
+// Inserts a chat message and, if it matches an auto-pin rule, a linked
+// pinned_memories row — shared by both the user-message and assistant-
+// message persistence points below. Callers must never `await` this on the
+// main response path — call it and chain `.catch(...)` instead, so a DB
+// failure can never block or break the SSE stream.
+async function persistMessage(params: {
+  personaId: string;
+  userId: string;
+  role: "user" | "assistant";
+  content: string;
+  emotion: string | null;
+}): Promise<void> {
+  const [row] = await db
+    .insert(chatMessages)
+    .values({
+      personaId: params.personaId,
+      userId: params.userId,
+      role: params.role,
+      content: params.content,
+      emotion: params.emotion,
+      isPinned: false,
+    })
+    .returning();
+
+  const { shouldPin, tag } = detectAutoPin(params.content);
+  if (shouldPin && row) {
+    await db.insert(pinnedMemories).values({
+      personaId: params.personaId,
+      userId: params.userId,
+      sourceType: "chat",
+      sourceId: row.id,
+      content: params.content,
+      autoTag: tag,
+      pinnedBy: "auto",
+    });
+
+    // Keep chatMessages.isPinned in sync with the auto-pin — without this,
+    // pinned_memories has the row but the message's own isPinned flag stays
+    // false, so a UI reading it directly would show nothing pinned.
+    await db.update(chatMessages)
+      .set({ isPinned: true, pinnedBy: "auto" })
+      .where(eq(chatMessages.id, row.id));
+  }
+}
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -223,6 +269,16 @@ export async function POST(req: NextRequest) {
     return new Response("Persona not found", { status: 404 });
   }
 
+  // Point A — persist the user's message before streaming starts. Not
+  // awaited: a DB hiccup here must never delay or block the response.
+  persistMessage({
+    personaId,
+    userId: session.user.id,
+    role: "user",
+    content: message,
+    emotion: null,
+  }).catch((err) => console.error("[CHAT PERSIST]", err));
+
   const [user] = await db
     .select({ displayName: users.displayName, profileBio: users.profileBio })
     .from(users)
@@ -278,6 +334,11 @@ export async function POST(req: NextRequest) {
   let emotionEmitted = false;
   let textBuffer = "";
   let pendingTrim = false;
+  // Accumulated for Point B persistence once the stream closes — mirrors
+  // exactly what the client actually receives as `content` (tag already
+  // stripped), not the raw model output.
+  let fullAssistantText = "";
+  let detectedEmotion: string | null = null;
 
   const encoder = new TextEncoder();
 
@@ -299,6 +360,7 @@ export async function POST(req: NextRequest) {
                 encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion })}\n\n`)
               );
               emotionEmitted = true;
+              detectedEmotion = emotion;
               pendingTrim = true;
               // Slice point is after the FULL match — tag plus any trailing
               // whitespace \s* already consumed, whether zero or more chars.
@@ -309,6 +371,7 @@ export async function POST(req: NextRequest) {
                 encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion: "calm" })}\n\n`)
               );
               emotionEmitted = true;
+              detectedEmotion = "calm";
             }
           }
 
@@ -323,6 +386,7 @@ export async function POST(req: NextRequest) {
             // `token`, so that shape would render nothing.
             if (outText) {
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content: outText })}\n\n`));
+              fullAssistantText += outText;
             }
             textBuffer = "";
           }
@@ -330,6 +394,18 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.error("Groq stream error:", err);
       } finally {
+        // Point B — persist the assembled assistant message once the stream
+        // closes. Not awaited: must never delay [DONE]/close, which is the
+        // client's only signal that "Thinking" has ended.
+        if (fullAssistantText.trim()) {
+          persistMessage({
+            personaId,
+            userId: session.user.id,
+            role: "assistant",
+            content: fullAssistantText,
+            emotion: detectedEmotion,
+          }).catch((err) => console.error("[CHAT PERSIST]", err));
+        }
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       }

@@ -5,6 +5,7 @@ import {
   uuid,
   json,
   integer,
+  boolean,
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
@@ -128,6 +129,43 @@ export const memoriesLog = pgTable("memories_log", {
     .defaultNow(),
 });
 
+// ─── Chat Messages ────────────────────────────────────────────────────────────
+
+export const chatMessages = pgTable("chat_messages", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  personaId: uuid("persona_id")
+    .notNull()
+    .references(() => personas.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull(),
+  role: text("role").notNull(), // "user" or "assistant"
+  content: text("content").notNull(),
+  emotion: text("emotion"), // SSE emotion tag, null for user messages
+  isPinned: boolean("is_pinned").notNull().default(false),
+  pinnedBy: text("pinned_by"), // "user" or "auto", null when not pinned
+  autoTag: text("auto_tag"), // e.g. "birthday", "meeting", "personal_fact"
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+// ─── Pinned Memories ──────────────────────────────────────────────────────────
+
+export const pinnedMemories = pgTable("pinned_memories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  personaId: uuid("persona_id")
+    .notNull()
+    .references(() => personas.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull(),
+  sourceType: text("source_type").notNull(), // "chat" or "call"
+  sourceId: uuid("source_id").notNull(), // chat_messages.id or call_sessions.id
+  content: text("content").notNull(), // the message text
+  autoTag: text("auto_tag"), // "birthday", "meeting", "personal_fact", null if user-pinned
+  pinnedBy: text("pinned_by").notNull(), // "user" or "auto"
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 // ─── Relations ────────────────────────────────────────────────────────────────
 
 export const usersRelations = relations(users, ({ many }) => ({
@@ -138,6 +176,22 @@ export const personasRelations = relations(personas, ({ one, many }) => ({
   user: one(users, { fields: [personas.userId], references: [users.id] }),
   callSessions: many(callSessions),
   memoriesLog: many(memoriesLog),
+  chatMessages: many(chatMessages),
+  pinnedMemories: many(pinnedMemories),
+}));
+
+export const chatMessagesRelations = relations(chatMessages, ({ one }) => ({
+  persona: one(personas, {
+    fields: [chatMessages.personaId],
+    references: [personas.id],
+  }),
+}));
+
+export const pinnedMemoriesRelations = relations(pinnedMemories, ({ one }) => ({
+  persona: one(personas, {
+    fields: [pinnedMemories.personaId],
+    references: [personas.id],
+  }),
 }));
 
 export const callSessionsRelations = relations(callSessions, ({ one }) => ({
@@ -164,3 +218,7 @@ export type CallSession = typeof callSessions.$inferSelect;
 export type NewCallSession = typeof callSessions.$inferInsert;
 export type MemoryLog = typeof memoriesLog.$inferSelect;
 export type NewMemoryLog = typeof memoriesLog.$inferInsert;
+export type ChatMessage = typeof chatMessages.$inferSelect;
+export type NewChatMessage = typeof chatMessages.$inferInsert;
+export type PinnedMemory = typeof pinnedMemories.$inferSelect;
+export type NewPinnedMemory = typeof pinnedMemories.$inferInsert;
