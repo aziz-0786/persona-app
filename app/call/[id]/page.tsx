@@ -119,6 +119,13 @@ export default function CallPage() {
   const deepgramCancelledRef = useRef(false);
   const micInitPromiseRef = useRef<Promise<void> | null>(null);
   const headRef = useRef<TalkingHeadInstance>(null);
+  // Set once, the first time connectDeepgram's WebSocket actually opens (the
+  // call becoming active) — not at component mount, which can be several
+  // seconds earlier while the Deepgram token fetch/warmup TTS ping are still
+  // in flight. Guarded so a later reconnect (see ws.onopen below) never
+  // resets it — call_sessions.startedAt must reflect the original call
+  // start, not a mid-call WS reconnect.
+  const callStartTimeRef = useRef<Date | null>(null);
 
   // Without this, llmAbortRef/ttsAbortRef start out null and the very first
   // submitTurn() call logs "llmAbort signals: undefined" — the abort-before-
@@ -162,7 +169,15 @@ export default function CallPage() {
 
   // ── Turn pipeline: /api/chat SSE → clause splitter → /api/tts → audio queue
   async function submitTurn(transcript: string) {
-    if (!transcript || !transcript.trim()) {
+    if (!transcript || transcript.trim() === "") {
+      console.log("[CALL] empty transcript, ignoring turn");
+      // Must still reset to "listening" here, not just return — this is the
+      // one guard standing between an empty-transcript call (Deepgram
+      // endpointing on silence, or a stray final after a reconnect) and a
+      // permanently stuck "Thinking..." state: handleMicClick refuses clicks
+      // while state is "thinking", so skipping this reset is exactly what
+      // would produce the non-clickable mic button this fix is meant to
+      // prevent, not the fix itself.
       setConvState("listening");
       return;
     }
@@ -474,6 +489,7 @@ export default function CallPage() {
       // leaves micError stuck true forever — there was no path back to null,
       // permanently disabling the mic button for the rest of the session.
       ws.onopen = () => {
+        if (!callStartTimeRef.current) callStartTimeRef.current = new Date();
         setMicError(null);
         // Covers the mic-click reconnect path in handleMicClick: state was
         // already set to "listening" before this new socket was ready
@@ -755,6 +771,26 @@ export default function CallPage() {
           }),
         });
       } catch {}
+    }
+
+    // Fire-and-forget — a DB failure here must never block navigation back
+    // to the dashboard. Client component: goes through /api/call-sessions
+    // rather than importing `db` directly.
+    if (historyRef.current.length > 0) {
+      const startedAt = callStartTimeRef.current ?? new Date();
+      const endedAt = new Date();
+      fetch("/api/call-sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personaId,
+          startedAt: startedAt.toISOString(),
+          endedAt: endedAt.toISOString(),
+          durationSeconds: Math.floor((endedAt.getTime() - startedAt.getTime()) / 1000),
+          turnCount: historyRef.current.length,
+          transcriptJson: historyRef.current,
+        }),
+      }).catch((err) => console.error("[CALL SESSION]", err));
     }
 
     router.push("/");

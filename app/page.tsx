@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
 import { Badge } from "@/components/ui";
-import { Phone, MessageCircle, Brain, Edit, Plus } from "lucide-react";
+import { Phone, MessageCircle, Brain, Edit, Plus, History } from "lucide-react";
 import { formatRelativeTime } from "@/lib/utils";
 
 export default async function PersonaLibraryPage() {
@@ -168,6 +168,12 @@ function PersonaCard({ persona }: { persona: typeof personas.$inferSelect }) {
         >
           <MessageCircle size={13} />
           Chat
+        </Link>
+        <Link
+          href={`/history/${persona.id}`}
+          className="flex items-center justify-center gap-1.5 px-2.5 py-2 bg-elevated hover:bg-border text-text-secondary text-xs font-medium rounded-lg transition-colors"
+        >
+          <History size={13} />
         </Link>
         <Link
           href={`/memory/${persona.id}`}
