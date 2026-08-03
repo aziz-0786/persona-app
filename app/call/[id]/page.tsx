@@ -169,16 +169,13 @@ export default function CallPage() {
 
   // ── Turn pipeline: /api/chat SSE → clause splitter → /api/tts → audio queue
   async function submitTurn(transcript: string) {
-    if (!transcript || transcript.trim() === "") {
-      console.log("[CALL] empty transcript, ignoring turn");
-      // Must still reset to "listening" here, not just return — this is the
-      // one guard standing between an empty-transcript call (Deepgram
-      // endpointing on silence, or a stray final after a reconnect) and a
-      // permanently stuck "Thinking..." state: handleMicClick refuses clicks
-      // while state is "thinking", so skipping this reset is exactly what
-      // would produce the non-clickable mic button this fix is meant to
-      // prevent, not the fix itself.
-      setConvState("listening");
+    if (!transcript || transcript.trim().length < 3) {
+      console.log("[CALL] transcript too short, ignoring:", JSON.stringify(transcript));
+      // Reset all the way to "idle" (not "listening") — the mic is fully
+      // released and the user must press again intentionally, rather than
+      // auto-resuming on what was likely reconnect noise or a stray
+      // one-or-two-character fragment.
+      setConvState("idle");
       return;
     }
     const trimmed = transcript.trim();
@@ -474,6 +471,7 @@ export default function CallPage() {
         // already moved on, while a stray echo final (awaitingFinalRef
         // false) is still rejected.
         if (stateRef.current !== "listening" && !awaitingFinalRef.current) {
+          console.log("[CALL] Deepgram final ignored, state is:", stateRef.current);
           return;
         }
         awaitingFinalRef.current = false;
@@ -497,8 +495,16 @@ export default function CallPage() {
         // Deepgram's idle timeout), so the mic needs to be armed here
         // instead of at the click site.
         if (stateRef.current === "listening" && micStreamRef.current) {
-          sendAudioRef.current = true;
-          console.log('[WS onopen] mic armed after reconnect');
+          // Delayed, and state re-checked at fire time: an immediate arm can
+          // start accepting Deepgram results that still contain buffered
+          // audio from the reconnect window itself, not the user's actual
+          // next utterance.
+          setTimeout(() => {
+            if (stateRef.current === "listening") {
+              sendAudioRef.current = true;
+              console.log("[WS] mic armed after reconnect delay");
+            }
+          }, 300);
         }
       };
       ws.onerror = () => setMicError("Speech recognition connection error");
