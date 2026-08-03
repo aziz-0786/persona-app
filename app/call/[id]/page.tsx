@@ -308,7 +308,7 @@ export default function CallPage() {
     }
 
     try {
-      const res = await fetch("/api/chat", {
+      const chatFetchPromise = fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: myLlmController.signal,
@@ -318,6 +318,15 @@ export default function CallPage() {
           history: historyRef.current.slice(-6),
         }),
       });
+
+      // Cleared right after the request is initiated (not after it
+      // resolves) — a Deepgram final arriving anywhere during the LLM+TTS
+      // phase that follows must not be able to retrigger submitTurn through
+      // the awaitingFinalRef bypass in the critical gate above.
+      awaitingFinalRef.current = false;
+      console.log("[CALL] awaitingFinalRef cleared after LLM submit");
+
+      const res = await chatFetchPromise;
 
       if (!res.body) throw new Error("No response body");
 
@@ -750,6 +759,8 @@ export default function CallPage() {
       // WS closed during TTS (Deepgram's own idle timeout can outlast a long
       // RunPod cold start) — reconnect; the mic arms in onopen instead of here.
       console.log('[MicClick] WS closed, reconnecting before listening');
+      awaitingFinalRef.current = false;
+      console.log("[CALL] awaitingFinalRef cleared on WS reconnect");
       connectDeepgram();
     } else {
       await ensureMicReady();
