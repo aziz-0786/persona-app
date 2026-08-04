@@ -181,6 +181,7 @@ export default function CallPage() {
     const trimmed = transcript.trim();
 
     const myTurnId = ++turnIdRef.current;
+    console.log("[CALL] turn", myTurnId, "started:", transcript.slice(0, 30));
     const myLlmController = new AbortController();
     const myTtsController = new AbortController();
     let ctx: AudioContext;
@@ -254,6 +255,13 @@ export default function CallPage() {
     function flushClause(clauseText: string) {
       const clause = clauseText.trim();
       if (!clause || voiceMissing) return;
+      // flushClause is invoked via clauses.forEach(flushClause), not a real
+      // loop — `return` here (skipping just this clause's TTS fetch) is the
+      // equivalent of "break" in that context.
+      if (turnIdRef.current !== myTurnId) {
+        console.log("[CALL] turn", myTurnId, "superseded, aborting TTS");
+        return;
+      }
       anyClauseAttempted = true;
 
       const fetchPromise = (async (): Promise<AudioBuffer | null> => {
@@ -297,7 +305,10 @@ export default function CallPage() {
           queue.onended(() => {
             if (completeFired) return;
             completeFired = true;
-            if (turnIdRef.current !== myTurnId) return;
+            if (turnIdRef.current !== myTurnId) {
+              console.log("[CALL] turn", myTurnId, "superseded, skipping idle reset");
+              return;
+            }
             setConvState("idle");
             stateRef.current = "idle";
             sendAudioRef.current = false;
@@ -327,6 +338,11 @@ export default function CallPage() {
       console.log("[CALL] awaitingFinalRef cleared after LLM submit");
 
       const res = await chatFetchPromise;
+
+      if (turnIdRef.current !== myTurnId) {
+        console.log("[CALL] turn", myTurnId, "superseded, aborting LLM");
+        return;
+      }
 
       if (!res.body) throw new Error("No response body");
 
@@ -520,6 +536,8 @@ export default function CallPage() {
       wsRef.current = ws;
 
       ws.onclose = () => {
+        turnIdRef.current++;
+        console.log("[CALL] WS reconnect, turnId advanced to", turnIdRef.current);
         if (keepAliveIntervalRef.current) {
           clearInterval(keepAliveIntervalRef.current);
           keepAliveIntervalRef.current = null;

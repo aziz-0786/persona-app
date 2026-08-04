@@ -21,7 +21,9 @@ export async function GET() {
   // can't set a custom Authorization header on a WebSocket. A short-lived
   // project API key (~40 char alphanumeric) from /v1/projects/{id}/keys
   // fits and is the documented workaround for browser WS auth. Rate-limited
-  // to 250 key creations/day, so keep the TTL short and don't over-call this.
+  // to 250 key creations/day — 600s (10min) TTL keeps calls to this route
+  // infrequent while still expiring reasonably fast; a 60s TTL was causing
+  // Deepgram to close the WS (and force a reconnect) every 20-60s.
   const res = await fetch(`https://api.deepgram.com/v1/projects/${projectId}/keys`, {
     method: "POST",
     headers: {
@@ -31,7 +33,7 @@ export async function GET() {
     body: JSON.stringify({
       comment: "temp-browser-key",
       scopes: ["usage:write"],
-      time_to_live_in_seconds: 60,
+      time_to_live_in_seconds: 600,
     }),
   });
 
@@ -49,5 +51,5 @@ export async function GET() {
 
   console.log("[DEEPGRAM TOKEN] created key, api_key_id:", data.api_key_id);
 
-  return NextResponse.json({ token: data.key, expiresIn: 60 });
+  return NextResponse.json({ token: data.key, expiresIn: 600 });
 }
