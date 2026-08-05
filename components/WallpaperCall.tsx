@@ -7,10 +7,9 @@ interface WallpaperCallProps {
   state: ConvState;
   emotion: string;
   elapsedSeconds: number;
-  onMicPress: () => void;
-  onMicRelease: () => void;
+  muted: boolean;
+  onMuteToggle: () => void;
   onEndCall: () => void;
-  latencyMs?: number;
   history?: Array<{ role: "user" | "assistant"; content: string }>;
   liveCaption?: string; // current interim Deepgram transcript
 }
@@ -58,7 +57,6 @@ function Waveform({ state }: { state: ConvState }) {
     <div className="flex items-end justify-center gap-[3px] h-16 w-32">
       {bars.map((maxH, i) => {
         const delay = `${i * 0.07}s`;
-        const baseH = state === "idle" ? "30%" : undefined;
 
         let animClass = "";
         if (state === "speaking") animClass = "animate-waveform-speak";
@@ -70,7 +68,7 @@ function Waveform({ state }: { state: ConvState }) {
             key={i}
             className={`w-[6px] rounded-full transition-all duration-300 ${animClass}`}
             style={{
-              height: baseH ?? `${maxH * 64}px`,
+              height: `${maxH * 64}px`,
               backgroundColor:
                 state === "speaking"
                   ? "rgba(255,255,255,0.85)"
@@ -87,29 +85,57 @@ function Waveform({ state }: { state: ConvState }) {
   );
 }
 
+// Always-on status indicator — replaces the old push-to-talk mic button as
+// the primary visual feedback for what the system is doing right now.
+function StatusIndicator({ state, personaName }: { state: ConvState; personaName: string }) {
+  if (state === "speaking") {
+    return (
+      <>
+        <Waveform state={state} />
+        <p className="text-white font-medium text-sm tracking-wide">{personaName}</p>
+      </>
+    );
+  }
+
+  if (state === "thinking") {
+    return (
+      <>
+        <div className="flex gap-1.5 items-center h-16">
+          <span className="w-2.5 h-2.5 rounded-full bg-white/60 animate-bounce" style={{ animationDelay: "0ms" }} />
+          <span className="w-2.5 h-2.5 rounded-full bg-white/60 animate-bounce" style={{ animationDelay: "150ms" }} />
+          <span className="w-2.5 h-2.5 rounded-full bg-white/60 animate-bounce" style={{ animationDelay: "300ms" }} />
+        </div>
+        <p className="text-white/50 text-sm tracking-wide">Thinking...</p>
+      </>
+    );
+  }
+
+  // "listening" and "idle" (the brief pre-connect moment) share this look —
+  // in an always-on call there's no meaningful third visual state, the mic
+  // is always either actively picking up speech or passively ready to.
+  return (
+    <>
+      <div
+        className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"
+        style={{ boxShadow: "0 0 12px rgba(52,211,153,0.8)" }}
+      />
+      <p className="text-white/50 text-sm tracking-wide">Listening...</p>
+    </>
+  );
+}
+
 export default function WallpaperCall({
   persona,
   state,
   emotion,
   elapsedSeconds,
-  onMicPress,
-  onMicRelease,
+  muted,
+  onMuteToggle,
   onEndCall,
-  latencyMs,
   history,
   liveCaption,
 }: WallpaperCallProps) {
   const gradient = nameToGradient(persona.name);
-
-  const statusText: Record<ConvState, string> = {
-    idle: "",
-    listening: "Listening…",
-    thinking: "Thinking…",
-    speaking: "",
-  };
-
-  const micActive = state === "listening";
-  const micDisabled = state === "thinking";
 
   return (
     <div className="fixed inset-0 overflow-hidden select-none">
@@ -166,12 +192,9 @@ export default function WallpaperCall({
           </span>
         </div>
 
-        {/* Center: waveform + status */}
+        {/* Center: always-visible status indicator */}
         <div className="flex-1 flex flex-col items-center justify-center gap-4">
-          <Waveform state={state} />
-          {statusText[state] && (
-            <p className="text-white/50 text-sm tracking-wide">{statusText[state]}</p>
-          )}
+          <StatusIndicator state={state} personaName={persona.name} />
         </div>
 
         {/* Transcript overlay — only shown when history has content OR live caption active */}
@@ -206,22 +229,19 @@ export default function WallpaperCall({
         {/* Bottom bar: buttons */}
         <div className="pb-12 px-5">
           <div className="flex items-center justify-center gap-6">
-            {/* Mic button */}
+            {/* Mute button */}
             <button
-              onPointerDown={onMicPress}
-              onPointerUp={onMicRelease}
-              disabled={micDisabled}
+              onClick={onMuteToggle}
               className={`
                 w-16 h-16 rounded-full flex items-center justify-center text-2xl
-                transition-all duration-200 active:scale-95
-                ${micActive
-                  ? "bg-white text-gray-900 shadow-lg shadow-white/20"
-                  : "bg-white/15 text-white/70 border border-white/20"
+                transition-all duration-200 active:scale-95 cursor-pointer
+                ${muted
+                  ? "bg-red-500/20 text-red-400 border border-red-500/40"
+                  : "bg-white/15 text-white border border-white/20"
                 }
-                ${micDisabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}
               `}
             >
-              🎤
+              {muted ? "🔇" : "🎤"}
             </button>
 
             {/* End call button */}
@@ -234,25 +254,6 @@ export default function WallpaperCall({
               📞
             </button>
           </div>
-
-          {state === "idle" && history && history.length > 0 && (
-            <p style={{
-              color: 'rgba(255,255,255,0.6)',
-              fontSize: '13px',
-              textAlign: 'center',
-              marginTop: '6px',
-              letterSpacing: '0.02em'
-            }}>
-              Tap to speak
-            </p>
-          )}
-
-          {/* Latency overlay */}
-          {latencyMs && latencyMs > 0 ? (
-            <p className="text-center text-white/20 text-xs mt-3 font-mono">
-              ~{latencyMs}ms
-            </p>
-          ) : null}
         </div>
       </div>
     </div>
