@@ -44,6 +44,7 @@ export async function GET() {
   }
 
   const data = await res.json();
+  console.log("[DEEPGRAM TOKEN] full response:", JSON.stringify(data));
   if (!data.key) {
     console.error("[DEEPGRAM TOKEN] response missing key:", data);
     return NextResponse.json({ error: "Malformed token response" }, { status: 502 });
