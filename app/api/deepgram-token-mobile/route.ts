@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 
+export const dynamic = 'force-dynamic';
 export const runtime = "nodejs";
 
 // Mobile-only counterpart to /api/deepgram-token. That route deliberately
@@ -24,6 +25,7 @@ export async function GET() {
 
   const res = await fetch("https://api.deepgram.com/v1/auth/grant", {
     method: "POST",
+    cache: 'no-store',
     headers: {
       Authorization: `Token ${apiKey}`,
       "Content-Type": "application/json",
