@@ -11,6 +11,7 @@ export const runtime = "nodejs";
 // clients aren't limited that way (they can set a real Authorization
 // header), so this route uses /v1/auth/grant's JWT directly instead.
 export async function GET() {
+  console.log('[deepgram-token-mobile] called at', new Date().toISOString());
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -29,6 +30,9 @@ export async function GET() {
     },
     body: JSON.stringify({}),
   });
+
+  const rawText = await res.clone().text();
+  console.log('[DEEPGRAM TOKEN MOBILE] raw response:', rawText);
 
   if (!res.ok) {
     const text = await res.text();
