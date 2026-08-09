@@ -102,7 +102,11 @@ async function cartesiaCloneVoice(personaId: string, voiceB64: string): Promise<
 
 type CartesiaTtsResult = { audio_base64: string; sample_rate: number } | { error: string };
 
-async function cartesiaTts(text: string, voiceId: string, emotion: string): Promise<CartesiaTtsResult> {
+async function cartesiaTtsAttempt(
+  text: string,
+  voiceId: string,
+  emotion: string
+): Promise<{ result: CartesiaTtsResult; status?: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CARTESIA_TIMEOUT_MS);
   const sampleRate = 24000;
@@ -127,20 +131,31 @@ async function cartesiaTts(text: string, voiceId: string, emotion: string): Prom
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       console.error("[TTS] Cartesia TTS call failed:", res.status, errText);
-      return { error: `TTS unavailable — Cartesia returned ${res.status}` };
+      return { result: { error: `TTS unavailable — Cartesia returned ${res.status}` }, status: res.status };
     }
 
     const bytes = await res.arrayBuffer();
     const audio_base64 = Buffer.from(bytes).toString("base64");
-    return { audio_base64, sample_rate: sampleRate };
+    return { result: { audio_base64, sample_rate: sampleRate } };
   } catch (err) {
     const isTimeout = err instanceof Error && err.name === "AbortError";
     const reason = isTimeout ? `timed out after ${CARTESIA_TIMEOUT_MS}ms` : err instanceof Error ? err.message : "network error";
     console.error("[TTS] Cartesia TTS call threw:", reason);
-    return { error: `TTS unavailable — ${reason}` };
+    return { result: { error: `TTS unavailable — ${reason}` } };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function cartesiaTts(text: string, voiceId: string, emotion: string): Promise<CartesiaTtsResult> {
+  const first = await cartesiaTtsAttempt(text, voiceId, emotion);
+  if (first.status === 502) {
+    console.log("[TTS] Cartesia returned 502, retrying once after 1500ms");
+    await new Promise((r) => setTimeout(r, 1500));
+    const second = await cartesiaTtsAttempt(text, voiceId, emotion);
+    return second.result;
+  }
+  return first.result;
 }
 
 export async function POST(req: NextRequest) {
