@@ -2,6 +2,7 @@ import NextAuth from "next-auth";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import Credentials from "next-auth/providers/credentials";
 import Email from "next-auth/providers/nodemailer";
+import Google from "next-auth/providers/google";
 import { db } from "@/db";
 import { users, accounts, sessions, verificationTokens } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -24,6 +25,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     //   server: process.env.EMAIL_SERVER,
     //   from: process.env.EMAIL_FROM,
     // }),
+
+    Google({
+      clientId: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+    }),
 
     // Credentials for dev/single-tenant (replace with Email in prod)
     Credentials({

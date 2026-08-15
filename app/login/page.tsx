@@ -74,6 +74,20 @@ export default function LoginPage() {
               Sign in
             </Button>
           </form>
+
+          <div className="flex items-center gap-3 my-4">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs text-text-muted">or</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => signIn("google", { callbackUrl: "/" })}
+            className="w-full flex items-center justify-center gap-2 rounded-lg border border-border py-2.5 text-sm font-medium text-text-primary hover:bg-surface-hover transition-colors"
+          >
+            Continue with Google
+          </button>
         </div>
 
         <p className="text-center text-xs text-text-muted">

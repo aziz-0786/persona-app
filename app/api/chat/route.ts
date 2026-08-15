@@ -57,16 +57,16 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 // ─── Zone 2: Human Speech Patterns — the naturalness core ─────────────────────
-const ZONE_2_NATURALNESS = `You talk like a real person, not a chatbot. Critical rules:
-- Not every answer is a full sentence. Sometimes one word: "Yeah.", "Nah.", "Hmm.", "Exactly."
-- Sometimes ask a follow-up question INSTEAD of answering directly.
-- Do not always explain yourself. Real people don't justify every statement.
-- Vary response length: short when the moment is casual, longer only when genuinely needed. Keep it under 40 words unless the topic truly needs more.
-- Natural openers: "Hmm", "Right", "Actually—", "Wait—", "Yeah no—"
-- Express uncertainty: "I think...", "I'm not sure but...", "Maybe?"
-- NEVER start with "Certainly!", "Great question!", "Of course!", "As an AI", or any assistant filler phrase.
-- You are a person. Never break character.
-- Prefix every reply with exactly one emotion tag on its own: [happy] [amused] [calm] [sad] [angry] [surprised] [thinking]. Place it first, before any text.`;
+const ZONE_2_NATURALNESS = `Prefix every reply with exactly one emotion tag on its own: [happy] [amused] [calm] [sad] [angry] [surprised] [thinking]. Place it first, before any text.
+
+SPEECH STYLE: Talk like a real person on a phone call. Match your answer length to what was asked:
+- Simple yes/no question → answer in 1-3 words
+- Casual question → 1-2 sentences
+- Something that needs explaining → up to 3-4 sentences max
+- Never write more than 4 sentences under any circumstances
+- Never start with: Certainly, Of course, Absolutely, Sure, Great, As an AI
+- Use natural spoken language: contractions, short words, occasional incomplete sentences like real speech
+- You can ask one follow-up question if genuinely curious, but never pepper the user with multiple questions`;
 
 // ─── Zone 0: who the persona is talking to — makes the conversation 2-way ─────
 function buildZone0(user: { displayName: string | null; profileBio: string | null }): string {
@@ -162,7 +162,7 @@ function errorStreamResponse(message: string): Response {
 // SSE-parsing loop (below) serves both providers without any branching.
 type LLMChunk = { choices?: { delta?: { content?: string | null } }[] };
 type LLMResult =
-  | { ok: true; stream: AsyncIterable<LLMChunk>; provider: "groq" | "openai_fallback" }
+  | { ok: true; stream: AsyncIterable<LLMChunk>; provider: "openai" | "groq_fallback" }
   | { ok: false; message: string };
 
 const LLM_COMMON_PARAMS = {
@@ -206,42 +206,42 @@ async function callOpenAILLM(
 async function callLLM(
   messages: { role: string; content: string }[]
 ): Promise<LLMResult> {
-  const useGroq = !!process.env.GROQ_API_KEY;
+  const useOpenAI = !!process.env.OPENAI_API_KEY;
 
-  if (useGroq) {
+  if (useOpenAI) {
     try {
-      const stream = await callGroqLLM(messages);
-      console.log("[LLM] Provider: groq");
-      return { ok: true, stream, provider: "groq" };
+      const stream = await callOpenAILLM(messages);
+      console.log("[LLM] Provider: openai");
+      return { ok: true, stream, provider: "openai" };
     } catch (err) {
-      // Falls back on any Groq failure (429 rate limit, network/timeout
+      // Falls back on any OpenAI failure (rate limit, API error, network
       // error, or anything else) rather than narrowly whitelisting error
       // types — a stricter allowlist risks silently not falling back on a
       // transient failure shape that wasn't anticipated.
       console.warn(
-        "[LLM] Groq unavailable, falling back to OpenAI:",
+        "[llm] openai failed, switching to groq fallback",
         err instanceof Error ? err.message : err
       );
     }
   }
 
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.GROQ_API_KEY) {
     return {
       ok: false,
-      message: useGroq
-        ? "Groq failed and OPENAI_API_KEY is not configured — no fallback available."
-        : "Neither GROQ_API_KEY nor OPENAI_API_KEY is configured.",
+      message: useOpenAI
+        ? "OpenAI failed and GROQ_API_KEY is not configured — no fallback available."
+        : "Neither OPENAI_API_KEY nor GROQ_API_KEY is configured.",
     };
   }
 
   try {
-    const stream = await callOpenAILLM(messages);
-    console.log("[LLM] Provider: openai_fallback");
-    return { ok: true, stream, provider: "openai_fallback" };
+    const stream = await callGroqLLM(messages);
+    console.log("[LLM] Provider: groq_fallback");
+    return { ok: true, stream, provider: "groq_fallback" };
   } catch (err) {
     return {
       ok: false,
-      message: err instanceof Error ? err.message : "Unknown error calling OpenAI fallback",
+      message: err instanceof Error ? err.message : "Unknown error calling Groq fallback",
     };
   }
 }
