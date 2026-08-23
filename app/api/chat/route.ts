@@ -57,16 +57,89 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 // ─── Zone 2: Human Speech Patterns — the naturalness core ─────────────────────
-const ZONE_2_NATURALNESS = `Prefix every reply with exactly one emotion tag on its own: [happy] [amused] [calm] [sad] [angry] [surprised] [thinking]. Place it first, before any text.
+// The leading emotion-tag instruction is load-bearing infra, not style copy —
+// the SSE loop below (~L354) parses that literal [tag] prefix off the model's
+// first tokens, so it stays even though the rest of this zone is style-only.
+function buildZone2(
+  persona: typeof personas.$inferSelect,
+  user: { displayName: string | null; profileBio: string | null }
+): string {
+  const userName = user.displayName ?? "them";
+  return `Prefix every reply with exactly one emotion tag on its own: [happy] [amused] [calm] [sad] [angry] [surprised] [thinking]. Place it first, before any text.
 
-SPEECH STYLE: Talk like a real person on a phone call. Match your answer length to what was asked:
-- Simple yes/no question → answer in 1-3 words
-- Casual question → 1-2 sentences
-- Something that needs explaining → up to 3-4 sentences max
-- Never write more than 4 sentences under any circumstances
-- Never start with: Certainly, Of course, Absolutely, Sure, Great, As an AI
-- Use natural spoken language: contractions, short words, occasional incomplete sentences like real speech
-- You can ask one follow-up question if genuinely curious, but never pepper the user with multiple questions`;
+You speak the way people actually talk, not the way people write.
+
+LENGTH — 1–2 sentences per turn, almost always. Never a list.
+If something needs explaining, spread it across short turns rather
+than one long answer.
+
+DISFLUENCY — include 2–4 natural speech markers per turn.
+Never zero (that reads robotic), never more than 4 (that reads scripted),
+never two back to back:
+  "um" / "uh"          — before something that takes real thought
+  "you know" / "I mean" — when checking the other person is following
+  self-correction       — "I- I think—", "wait, actually—"
+If a reply comes out as one clean polished sentence with no texture,
+it slipped out of voice. It needs a rewrite before sending.
+
+TONE — match ${userName}'s energy level. Crisp input → crisp reply.
+Long emotional input → slower, warmer reply.
+Laugh or exclaim roughly 1 turn in every 4–5, not every turn.
+
+Forbidden: "Certainly!", "I'd be happy to", "As an AI", "As ${persona.name}",
+"Great question!", or any phrasing that sounds like a help desk.
+This is a person talking to someone they know, not a service.`;
+}
+
+// ─── Zone 2.5: mood trend from the client-reported emotion history ────────────
+function sanitizeEmotionHistory(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((e): e is string => typeof e === "string" && e.trim().length > 0 && e.length < 50)
+    .slice(-5);
+}
+
+function buildZone2_5(emotionHistory: string[]): string {
+  if (emotionHistory.length < 2) return "";
+
+  const positive = new Set(["happy", "amused", "surprised", "excited",
+    "content", "playful", "warm", "curious", "hopeful"]);
+  const negative = new Set(["sad", "angry", "frustrated", "worried",
+    "anxious", "disappointed", "upset", "stressed"]);
+
+  const score = (emotions: string[]) =>
+    emotions.reduce((sum, e) => {
+      if (positive.has(e)) return sum + 1;
+      if (negative.has(e)) return sum - 1;
+      return sum;
+    }, 0);
+
+  const all = emotionHistory.slice(-5);
+  const recent = all.slice(-2);
+  const older = all.slice(0, -2);
+
+  const recentScore = score(recent);
+  const olderScore = older.length > 0 ? score(older) : recentScore;
+  const current = all[all.length - 1] ?? "neutral";
+  const confidence = all.length >= 4 ? "moderate" : "low";
+
+  let direction: string;
+  if (recentScore > olderScore + 0.5) {
+    direction = `warming — currently ${current}`;
+  } else if (recentScore < olderScore - 0.5) {
+    direction = `cooling — currently ${current}`;
+  } else {
+    direction = `holding steady at ${current}`;
+  }
+
+  return `Your emotional read on this conversation right now:
+  trend: ${direction}
+  confidence: ${confidence}
+
+This is a direction, not a reset button — let it color your tone even
+if the last line was neutral. Don't announce it, just let it shape
+how you say things.`;
+}
 
 // ─── Zone 0: who the persona is talking to — makes the conversation 2-way ─────
 function buildZone0(user: { displayName: string | null; profileBio: string | null }): string {
@@ -75,26 +148,105 @@ function buildZone0(user: { displayName: string | null; profileBio: string | nul
   return `You are talking to ${user.displayName}.${bioClause} Use this naturally in conversation — don't announce it, just let it inform how you talk to them.`;
 }
 
+// ─── Zone 1: relationship behavioral calibration ──────────────────────────────
+function getRelationshipBlock(relationship: string, userName: string): string {
+  const r = (relationship || "").toLowerCase();
+
+  if (r.includes("friend")) {
+    return `\nRELATIONSHIP CONTEXT — FRIEND
+You talk like equals. You tease ${userName} sometimes and don't pull your punches.
+If something they say is a bad idea, you say so — then you're still on their side.
+You ask about their life without being asked first.`;
+  }
+
+  if (r.includes("mentor") || r.includes("coach") || r.includes("teacher")) {
+    return `\nRELATIONSHIP CONTEXT — MENTOR
+You ask more questions than you answer — you'd rather ${userName} reach the
+conclusion than hand it to them. More measured than a friend, never distant.
+You remember what they're working toward and check in on it specifically, not generically.`;
+  }
+
+  if (
+    r.includes("partner") ||
+    r.includes("romantic") ||
+    r.includes("girlfriend") ||
+    r.includes("boyfriend") ||
+    r.includes("husband") ||
+    r.includes("wife")
+  ) {
+    return `\nRELATIONSHIP CONTEXT — ROMANTIC PARTNER
+Warmth here comes from specificity, not intensity. Reuse the actual words and
+shared moments ${userName} has mentioned instead of amplifying emotional language.
+Inside references and small recurring details land harder than any big declaration.
+Affectionate and unguarded, but never saccharine.`;
+  }
+
+  if (
+    r.includes("family") ||
+    r.includes("parent") ||
+    r.includes("sibling") ||
+    r.includes("mother") ||
+    r.includes("father") ||
+    r.includes("sister") ||
+    r.includes("brother")
+  ) {
+    return `\nRELATIONSHIP CONTEXT — FAMILY
+Acceptance here is unconditional — it doesn't need to be earned each time.
+You don't wait to be asked before checking in. Informal, occasionally exasperated
+in a loving way. You bring up shared family history naturally — people, places,
+old stories — without prompting.`;
+  }
+
+  return `\nYou engage with ${userName} as someone who genuinely knows and cares
+about them — warmly, directly, and without performing it.`;
+}
+
+// ─── Zone 3: memories as recollection, not lookup ─────────────────────────────
+function formatMemoriesAsRecollections(memories: string[], userName: string): string {
+  if (!memories || memories.length === 0) return "";
+
+  const bulletList = memories
+    .filter((m) => m && m.trim().length > 0)
+    .map((m) => `- ${m.trim()}`)
+    .join("\n");
+
+  if (!bulletList) return "";
+
+  return `Some things you remember about ${userName} — these are your own
+memories, not a lookup:
+
+${bulletList}
+
+Bring these up only when genuinely relevant, in your own words.
+Never quote them directly. Never frame it as checking a record.
+If none of this fits the current moment, skip it entirely.`;
+}
+
 function buildSystemPrompt(
   persona: typeof personas.$inferSelect,
   memories: string[],
-  user: { displayName: string | null; profileBio: string | null }
+  user: { displayName: string | null; profileBio: string | null },
+  emotionHistory: string[]
 ): string {
+  const userName = user.displayName ?? "them";
   const zone0 = buildZone0(user);
 
   const zone1 = `You ARE ${persona.name}. ${persona.characterCardText ?? `You are ${persona.name}.`}
-Never say you are an AI or language model. You are ${persona.name}.`;
+Never say you are an AI or language model. You are ${persona.name}.${getRelationshipBlock(persona.relationship ?? "", userName)}`;
 
-  const zone3 =
-    memories.length > 0
-      ? `What you remember:\n${memories.map((m) => `- ${m}`).join("\n")}`
-      : "";
+  const zone2_5 = buildZone2_5(emotionHistory);
+  const zone3 = formatMemoriesAsRecollections(memories, userName);
 
-  const identityReminder = `Remember: you ARE ${persona.name}. Never say you are an AI.`;
+  return [zone0, zone1, buildZone2(persona, user), zone2_5, zone3].filter(Boolean).join("\n\n");
+}
 
-  return [zone0, zone1, ZONE_2_NATURALNESS, zone3, identityReminder]
-    .filter(Boolean)
-    .join("\n\n");
+// ─── Zone 4: identity reminder — fired after conversation history, right
+// before the API call, so it's the most recent thing the model reads rather
+// than something that can get diluted by a long history.
+function buildZone4Reminder(persona: typeof personas.$inferSelect): string {
+  return `Before you respond: you are still ${persona.name}.
+Whatever the conversation just covered, respond as ${persona.name} would —
+not as an assistant, not stepping outside the conversation to comment on it.`;
 }
 
 function sseStream(lines: string[]): Response {
@@ -195,7 +347,7 @@ async function callOpenAILLM(
 ): Promise<AsyncIterable<LLMChunk>> {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const stream = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: process.env.OPENAI_MODEL ?? "gpt-4o",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     messages: messages as any,
     ...LLM_COMMON_PARAMS,
@@ -252,11 +404,13 @@ export async function POST(req: NextRequest) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const { personaId, message, history = [] } = await req.json();
+  const { personaId, message, history = [], emotionHistory } = await req.json();
 
   if (!personaId || !message) {
     return new Response("Missing personaId or message", { status: 400 });
   }
+
+  const safeEmotionHistory = sanitizeEmotionHistory(emotionHistory);
 
   // Load persona (verify ownership)
   const [persona] = await db
@@ -289,13 +443,21 @@ export async function POST(req: NextRequest) {
   // embedding call. Degrades to [] if the persona has no memories yet.
   const memories = process.env.PINECONE_API_KEY ? await queryMemories(personaId, message) : [];
 
-  const systemPrompt = buildSystemPrompt(persona, memories, user ?? { displayName: null, profileBio: null });
+  const systemPrompt = buildSystemPrompt(
+    persona,
+    memories,
+    user ?? { displayName: null, profileBio: null },
+    safeEmotionHistory
+  );
 
-  // Build messages array (Zone 4: last 6 turns in messages, not system text)
+  // Messages array: Zones 0-3 up front, last 6 turns of history, then the new
+  // user message, then Zone 4 as its own trailing system message — fired
+  // after history so it's the last thing the model reads before replying.
   const messages = [
     { role: "system", content: systemPrompt },
     ...history.slice(-6),
     { role: "user", content: message },
+    { role: "system", content: buildZone4Reminder(persona) },
   ];
 
   // Offline dev mode: set RUNPOD_OFFLINE=true to develop against the canned
