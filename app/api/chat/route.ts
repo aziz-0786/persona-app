@@ -308,13 +308,14 @@ function errorStreamResponse(message: string): Response {
   ]);
 }
 
-// Both Groq and OpenAI's streaming chat.completions emit the identical
-// `{choices: [{delta: {content}}]}` shape per chunk — Groq's SDK is a
-// deliberate OpenAI-compatible clone — so one chunk type and one downstream
-// SSE-parsing loop (below) serves both providers without any branching.
+// Groq, OpenAI, and DeepSeek's streaming chat.completions all emit the
+// identical `{choices: [{delta: {content}}]}` shape per chunk — Groq and
+// DeepSeek are both deliberate OpenAI-compatible clones — so one chunk type
+// and one downstream SSE-parsing loop (below) serves all of them without any
+// branching.
 type LLMChunk = { choices?: { delta?: { content?: string | null } }[] };
 type LLMResult =
-  | { ok: true; stream: AsyncIterable<LLMChunk>; provider: "openai" | "groq_fallback" }
+  | { ok: true; stream: AsyncIterable<LLMChunk>; provider: "deepseek" | "groq_fallback" }
   | { ok: false; message: string };
 
 const LLM_COMMON_PARAMS = {
@@ -340,8 +341,9 @@ async function callGroqLLM(
   });
 }
 
-// Fallback when Groq is unset or fails — same messages array, same system
-// prompt (built once, above, before either provider is chosen).
+// No longer in the primary/fallback chain — DeepSeek is primary, Groq is
+// fallback (see callLLM below). Kept, unused, so reverting to OpenAI is a
+// one-line change in callLLM rather than rewriting this call.
 async function callOpenAILLM(
   messages: { role: string; content: string }[]
 ): Promise<AsyncIterable<LLMChunk>> {
@@ -355,23 +357,55 @@ async function callOpenAILLM(
   return stream as unknown as AsyncIterable<LLMChunk>;
 }
 
+// Primary LLM — DeepSeek's OpenAI-compatible endpoint (same `openai` package,
+// different baseURL/key). V4 models default to "thinking" mode on, which
+// adds latency and emits raw <think>...</think> tokens that would land
+// straight in the SSE `content` stream and corrupt playback, so it's
+// disabled below.
+//
+// Note: DeepSeek's own examples show this as a Python-SDK-style `extra_body`
+// kwarg, but the JS `openai` package has no such wrapper — the params object
+// passed to `.create()` IS the request body, so `thinking` is set directly
+// at the top level (cast via `as any` since the SDK's TS types don't know
+// this field). Nesting it under a literal `extra_body: {...}` key, as the
+// Python convention implies, would just send an unrecognized `extra_body`
+// field and leave thinking mode on — worth confirming against DeepSeek's
+// current docs before relying on this in production.
+async function callDeepSeekLLM(
+  messages: { role: string; content: string }[]
+): Promise<AsyncIterable<LLMChunk>> {
+  const deepseek = new OpenAI({
+    apiKey: process.env.DEEPSEEK_API_KEY ?? "",
+    baseURL: "https://api.deepseek.com",
+  });
+  const stream = await deepseek.chat.completions.create({
+    model: process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    messages: messages as any,
+    ...LLM_COMMON_PARAMS,
+    thinking: { type: "disabled" },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any);
+  return stream as unknown as AsyncIterable<LLMChunk>;
+}
+
 async function callLLM(
   messages: { role: string; content: string }[]
 ): Promise<LLMResult> {
-  const useOpenAI = !!process.env.OPENAI_API_KEY;
+  const useDeepSeek = !!process.env.DEEPSEEK_API_KEY;
 
-  if (useOpenAI) {
+  if (useDeepSeek) {
     try {
-      const stream = await callOpenAILLM(messages);
-      console.log("[LLM] Provider: openai");
-      return { ok: true, stream, provider: "openai" };
+      const stream = await callDeepSeekLLM(messages);
+      console.log("[LLM] Provider: deepseek");
+      return { ok: true, stream, provider: "deepseek" };
     } catch (err) {
-      // Falls back on any OpenAI failure (rate limit, API error, network
+      // Falls back on any DeepSeek failure (rate limit, API error, network
       // error, or anything else) rather than narrowly whitelisting error
       // types — a stricter allowlist risks silently not falling back on a
       // transient failure shape that wasn't anticipated.
       console.warn(
-        "[llm] openai failed, switching to groq fallback",
+        "[llm] deepseek failed, switching to groq fallback",
         err instanceof Error ? err.message : err
       );
     }
@@ -380,15 +414,15 @@ async function callLLM(
   if (!process.env.GROQ_API_KEY) {
     return {
       ok: false,
-      message: useOpenAI
-        ? "OpenAI failed and GROQ_API_KEY is not configured — no fallback available."
-        : "Neither OPENAI_API_KEY nor GROQ_API_KEY is configured.",
+      message: useDeepSeek
+        ? "DeepSeek failed and GROQ_API_KEY is not configured — no fallback available."
+        : "Neither DEEPSEEK_API_KEY nor GROQ_API_KEY is configured.",
     };
   }
 
   try {
     const stream = await callGroqLLM(messages);
-    console.log("[LLM] Provider: groq_fallback");
+    console.log("[LLM] Provider: groq (fallback)");
     return { ok: true, stream, provider: "groq_fallback" };
   } catch (err) {
     return {
@@ -443,6 +477,9 @@ export async function POST(req: NextRequest) {
   // embedding call. Degrades to [] if the persona has no memories yet.
   const memories = process.env.PINECONE_API_KEY ? await queryMemories(personaId, message) : [];
 
+  console.log('[RAG] memories fetched:', memories?.length ?? 0,
+              memories?.map(m => m.substring(0, 50)));
+
   const systemPrompt = buildSystemPrompt(
     persona,
     memories,
@@ -462,9 +499,9 @@ export async function POST(req: NextRequest) {
 
   // Offline dev mode: set RUNPOD_OFFLINE=true to develop against the canned
   // stub response without spending LLM requests, or as a last resort when
-  // neither GROQ_API_KEY nor OPENAI_API_KEY is configured yet.
+  // neither GROQ_API_KEY nor DEEPSEEK_API_KEY is configured yet.
   const useStub =
-    (!process.env.GROQ_API_KEY && !process.env.OPENAI_API_KEY) ||
+    (!process.env.GROQ_API_KEY && !process.env.DEEPSEEK_API_KEY) ||
     process.env.RUNPOD_OFFLINE === "true";
 
   if (useStub) {
@@ -502,13 +539,60 @@ export async function POST(req: NextRequest) {
   let fullAssistantText = "";
   let detectedEmotion: string | null = null;
 
+  // Safety net for DeepSeek V4's "thinking" mode: even with it disabled via
+  // the `thinking` param, a <think>...</think> block that slips through
+  // must never reach the client — Cartesia would speak it verbatim. Buffers
+  // a stateful tail across chunks since a tag can split across two deltas
+  // (e.g. "<th" + "ink>").
+  let inThinkBlock = false;
+  let thinkBuffer = "";
+
+  function stripThinkTags(token: string): string {
+    thinkBuffer += token;
+    let clean = "";
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      if (inThinkBlock) {
+        const close = thinkBuffer.indexOf("</think>");
+        if (close === -1) break; // still inside the block — keep buffering
+        thinkBuffer = thinkBuffer.slice(close + "</think>".length);
+        inThinkBlock = false;
+        continue;
+      }
+
+      const open = thinkBuffer.indexOf("<think>");
+      if (open === -1) {
+        // No open tag pending — hold back a short tail in case it's the
+        // start of a "<think>" split across chunks, emit the rest as clean.
+        const holdback = Math.min(thinkBuffer.length, "<think>".length - 1);
+        const safeLen = thinkBuffer.length - holdback;
+        if (safeLen > 0) {
+          clean += thinkBuffer.slice(0, safeLen);
+          thinkBuffer = thinkBuffer.slice(safeLen);
+        }
+        break;
+      }
+
+      // Emit everything before the open tag, then enter the block.
+      clean += thinkBuffer.slice(0, open);
+      thinkBuffer = thinkBuffer.slice(open + "<think>".length);
+      inThinkBlock = true;
+    }
+
+    return clean;
+  }
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     async start(controller) {
       try {
         for await (const chunk of result.stream) {
-          const delta = chunk.choices?.[0]?.delta?.content ?? "";
+          const rawDelta = chunk.choices?.[0]?.delta?.content ?? "";
+          if (!rawDelta) continue;
+
+          const delta = stripThinkTags(rawDelta);
           if (!delta) continue;
 
           textBuffer += delta;
