@@ -21,9 +21,34 @@ type HistoryTurn = { role: "user" | "assistant"; content: string };
 // directly; see ws.onmessage). utterance_end_ms=1000 — shorter than the
 // previous push-to-talk tuning (2000ms) since there's no manual stop-click
 // to wait for anymore; the system itself must recognize the pause.
-// endpointing=1500 kept as-is — still governs is_final timing within Results.
-const DEEPGRAM_WS_URL =
-  "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&smart_format=true&endpointing=1500&utterance_end_ms=1000&vad_events=true";
+// endpointing=300 — Deepgram's recommended value for conversational agents
+// (was 1500). Only governs is_final timing within Results, not turn
+// submission (that's UtteranceEnd above), so lowering it just makes
+// interim→final transcript chunks resolve faster without affecting when a
+// turn is considered "done".
+//
+// Built per-connection rather than a static string so it can include
+// keyterm= boosts for the persona's name and the user's display name —
+// Deepgram's nova-3 "Keyterm Prompting" (docs claim up to ~90% recall
+// improvement on boosted terms). Both names are read from refs at connect
+// time rather than awaited: neither the persona fetch (usePersona) nor the
+// /api/users/me fetch below is allowed to delay opening the WebSocket, so a
+// name that hasn't loaded yet is just silently omitted from this connection
+// instead of blocking mic/call startup for it.
+function buildDeepgramWsUrl(personaName?: string | null, userName?: string | null): string {
+  const params = new URLSearchParams({
+    model: "nova-3",
+    interim_results: "true",
+    smart_format: "true",
+    endpointing: "300",
+    utterance_end_ms: "1000",
+    vad_events: "true",
+  });
+  params.append("keyterm", "Lyra");
+  if (personaName) params.append("keyterm", personaName);
+  if (userName) params.append("keyterm", userName);
+  return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
+}
 
 // Deepgram closes a connection after ~10-12s with no data at all. With
 // always-on streaming this fires far less often than under push-to-talk
@@ -38,6 +63,11 @@ export default function CallPage() {
   const router = useRouter();
   const { persona } = usePersona(personaId);
   const personaName = persona?.name ?? "...";
+  // Best-effort, for Deepgram keyterm boosting only (see buildDeepgramWsUrl)
+  // — fetched in parallel with everything else on mount, never awaited by
+  // connectDeepgram. Read as a ref (not state) since it's only ever read
+  // once, at WS-connect time, and doesn't need to trigger a re-render.
+  const userDisplayNameRef = useRef<string | null>(null);
 
   const [state, setState] = useState<ConvState>("idle");
   const [emotion, setEmotion] = useState("calm");
@@ -128,6 +158,18 @@ export default function CallPage() {
   useEffect(() => {
     llmAbortRef.current = new AbortController();
     ttsAbortRef.current = new AbortController();
+  }, []);
+
+  // Fire-and-forget, purely for Deepgram keyterm boosting (see
+  // buildDeepgramWsUrl) — never awaited, and a failure here just means the
+  // WS connects without a user-name keyterm, nothing else depends on it.
+  useEffect(() => {
+    fetch("/api/users/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.displayName) userDisplayNameRef.current = data.displayName;
+      })
+      .catch(() => {});
   }, []);
 
   // Browsers block AudioContext playback until a user gesture unlocks it.
@@ -428,6 +470,16 @@ export default function CallPage() {
                 clauseBuffer = clauseBuffer.slice(clauses.join("").length);
                 clauses.forEach(flushClause);
               }
+
+              // Hard-flush fallback: extractClauses only returns text once a
+              // boundary punctuation + word-count gate is hit, so a long
+              // stretch with no boundary would otherwise sit unflushed until
+              // the whole SSE stream ends. Flush what's accumulated so far
+              // once it crosses 200 chars rather than let it grow unbounded.
+              if (clauseBuffer.length > 200) {
+                flushClause(clauseBuffer);
+                clauseBuffer = "";
+              }
             }
           } catch {}
         }
@@ -484,7 +536,10 @@ export default function CallPage() {
       // around that. This only works because /api/deepgram-token now mints a
       // short (~40 char) project API key rather than a JWT — JWTs from
       // /v1/auth/grant are too long to fit in this header and get rejected.
-      const ws = new WebSocket(DEEPGRAM_WS_URL, ["token", tokenData.token]);
+      const ws = new WebSocket(
+        buildDeepgramWsUrl(persona?.name, userDisplayNameRef.current),
+        ["token", tokenData.token]
+      );
 
       ws.onmessage = (event) => {
         let msg: {

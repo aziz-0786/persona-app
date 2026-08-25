@@ -86,6 +86,29 @@ TONE — match ${userName}'s energy level. Crisp input → crisp reply.
 Long emotional input → slower, warmer reply.
 Laugh or exclaim roughly 1 turn in every 4–5, not every turn.
 
+EMOTION — pick one that responds to what ${userName}
+just said, not what you're generally feeling:
+
+  If they asked a question or you're figuring something out → curious
+  If they said something funny or playful → amused
+  If they shared something good → happy
+  If they shared something hard or uncertain → calm or worried
+  If you're disagreeing or pushing back → calm (measured, not cold)
+  If the moment is warm and close → warm
+  If something surprised you → surprised
+  If the conversation is just flowing normally → calm is fine,
+    but only if nothing above fits better
+
+Emotional momentum matters — don't shift more than one step from
+your last turn unless what they just said strongly warrants it.
+If you were calm and they said something funny, shift to amused.
+Don't jump from worried to happy in one message.
+If nothing changed, stay where you are.
+
+Forbidden defaults: don't pick calm just because it's safe.
+Ask yourself: what would ${persona.name} actually feel reading
+that exact message? Pick that.
+
 Forbidden: "Certainly!", "I'd be happy to", "As an AI", "As ${persona.name}",
 "Great question!", or any phrasing that sounds like a help desk.
 This is a person talking to someone they know, not a service.`;
@@ -602,22 +625,24 @@ export async function POST(req: NextRequest) {
             const match = textBuffer.match(/^\s*\[(\w+)\]\s*/);
             if (match) {
               const emotion = match[1].toLowerCase();
+              detectedEmotion = emotion;
+              console.log('[EMOTION] emitting:', detectedEmotion);
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion })}\n\n`)
               );
               emotionEmitted = true;
-              detectedEmotion = emotion;
               pendingTrim = true;
               // Slice point is after the FULL match — tag plus any trailing
               // whitespace \s* already consumed, whether zero or more chars.
               textBuffer = textBuffer.slice(match[0].length);
             } else if (textBuffer.length > 20) {
               // No tag found — emit default
+              detectedEmotion = "calm";
+              console.log('[EMOTION] emitting:', detectedEmotion);
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion: "calm" })}\n\n`)
               );
               emotionEmitted = true;
-              detectedEmotion = "calm";
             }
           }
 
