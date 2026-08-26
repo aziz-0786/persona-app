@@ -28,9 +28,12 @@ const CARTESIA_API_URL = "https://api.cartesia.ai";
 // Cartesia-Version — pinned to the one valid enum value for the current API
 // spec (2026-03-01), not today's date.
 const CARTESIA_VERSION = "2026-03-01";
-// "sonic-3.5" always points at the latest stable snapshot per Cartesia's
-// docs (as opposed to "sonic-latest", which is beta/unstable).
-const CARTESIA_MODEL_ID = "sonic-3.5";
+// Was hardcoded to "sonic-3.5" (latest stable snapshot per Cartesia's docs,
+// as opposed to "sonic-latest" which is beta/unstable) — now overridable via
+// env. NOTE: the "sonic-2" fallback only applies if CARTESIA_MODEL is unset;
+// set it explicitly in .env/Railway to avoid silently downgrading from
+// sonic-3.5.
+const cartesiaModel = process.env.CARTESIA_MODEL ?? 'sonic-3.5';
 // 15s: Cartesia's documented latency is sub-90ms for TTS and clone requests
 // are typically a couple seconds — anything past 15s is a real failure, not
 // a cold start (Cartesia has no cold-start concept, unlike RunPod).
@@ -117,7 +120,7 @@ async function cartesiaTtsAttempt(
       method: "POST",
       headers: cartesiaHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        model_id: CARTESIA_MODEL_ID,
+        model_id: cartesiaModel,
         transcript: text,
         voice: { mode: "id", id: voiceId },
         // WAV/pcm_s16le — a container decodeAudioData can parse client-side,
