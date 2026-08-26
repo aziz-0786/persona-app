@@ -3,8 +3,9 @@ import { Pinecone } from "@pinecone-database/pinecone";
 // Single shared serverless index with Pinecone-hosted embeddings (integrated
 // inference) — personas are isolated via namespace, not separate indexes.
 export const KNOWLEDGE_INDEX_NAME = "persona-knowledge";
-const KNOWLEDGE_INDEX_CLOUD = "aws";
-const KNOWLEDGE_INDEX_REGION = "us-east-1";
+// Shared by every index created in this file — same serverless project.
+const PINECONE_CLOUD = "aws";
+const PINECONE_REGION = "us-east-1";
 const EMBED_MODEL = "llama-text-embed-v2";
 const EMBED_TEXT_FIELD = "chunk_text";
 
@@ -31,8 +32,8 @@ async function ensureKnowledgeIndex() {
   if (!exists) {
     await pc.createIndexForModel({
       name: KNOWLEDGE_INDEX_NAME,
-      cloud: KNOWLEDGE_INDEX_CLOUD,
-      region: KNOWLEDGE_INDEX_REGION,
+      cloud: PINECONE_CLOUD,
+      region: PINECONE_REGION,
       embed: {
         model: EMBED_MODEL,
         fieldMap: { text: EMBED_TEXT_FIELD },
@@ -114,9 +115,10 @@ export async function queryKnowledge(
 // ─── Episodic memories (call/chat summaries) ───────────────────────────────────
 // Separate index from persona-knowledge: memoriesLog rows (db/schema.ts) are
 // the source of truth in Postgres; this index holds their embeddings for
-// semantic retrieval. Nothing upserts to this index yet (that's memory
-// commit — a later phase), so it may not exist — queryMemories degrades to
-// [] rather than throwing in that case.
+// semantic retrieval, written by upsertMemory() (called from
+// /api/memory/commit after the Postgres insert). queryMemories still
+// degrades to [] rather than throwing if the index doesn't exist yet (e.g.
+// a persona whose first call hasn't ended, so upsertMemory hasn't run).
 export const MEMORIES_INDEX_NAME = "persona-memories";
 const MEMORY_TEXT_FIELD = "text";
 
@@ -126,6 +128,61 @@ export async function queryMemories(
   topK = 3
 ): Promise<string[]> {
   return searchTextIndex(MEMORIES_INDEX_NAME, personaId, queryText, MEMORY_TEXT_FIELD, topK);
+}
+
+async function ensureMemoriesIndex() {
+  const pc = getClient();
+  const { indexes } = await pc.listIndexes();
+  const exists = indexes?.some((idx) => idx.name === MEMORIES_INDEX_NAME);
+
+  if (!exists) {
+    await pc.createIndexForModel({
+      name: MEMORIES_INDEX_NAME,
+      cloud: PINECONE_CLOUD,
+      region: PINECONE_REGION,
+      embed: {
+        model: EMBED_MODEL,
+        fieldMap: { text: MEMORY_TEXT_FIELD },
+      },
+      waitUntilReady: true,
+    });
+  }
+
+  return pc.index(MEMORIES_INDEX_NAME);
+}
+
+// Writes extracted facts into the persona's namespace — mirrors
+// upsertKnowledgeChunks's integrated-inference pattern (upsertRecords with a
+// text field) deliberately, NOT a manual-embedding + raw-vector upsert: this
+// index is created via createIndexForModel with llama-text-embed-v2 baked
+// in, which is what queryMemories's searchRecords() call expects on the
+// read side. Embedding with a different model (e.g. OpenAI's
+// text-embedding-3-small) would produce vectors of the wrong dimensionality
+// and Pinecone would reject the upsert outright.
+//
+// Never throws — a Pinecone outage must never turn an otherwise-successful
+// memory commit (the Postgres insert the caller already did) into an error.
+export async function upsertMemory(personaId: string, facts: string[]): Promise<void> {
+  const clean = facts.filter((f) => f && f.trim().length > 0);
+  if (clean.length === 0) return;
+
+  console.log("[MEMORY] upsert called, personaId:", personaId);
+  try {
+    const index = await ensureMemoriesIndex();
+    const namespace = index.namespace(personaId);
+
+    // Suffixed with the array index too — Date.now() alone can collide when
+    // multiple facts from the same call are mapped in the same tick.
+    const records = clean.map((text, i) => ({
+      _id: `mem_${personaId}_${Date.now()}_${i}`,
+      [MEMORY_TEXT_FIELD]: text,
+    }));
+
+    await namespace.upsertRecords({ records });
+    console.log("[MEMORY] upsert complete, vectors:", records.length);
+  } catch (err) {
+    console.error("[MEMORY] upsert failed:", err);
+  }
 }
 
 export async function deleteKnowledgeNamespace(personaId: string): Promise<void> {
