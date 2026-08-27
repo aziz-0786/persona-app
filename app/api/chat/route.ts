@@ -348,7 +348,20 @@ function errorStreamResponse(message: string): Response {
 // DeepSeek are both deliberate OpenAI-compatible clones — so one chunk type
 // and one downstream SSE-parsing loop (below) serves all of them without any
 // branching.
-type LLMChunk = { choices?: { delta?: { content?: string | null } }[] };
+// usage is only populated on the final chunk of the stream, and only
+// because stream_options.include_usage is set below — DeepSeek's
+// prompt_cache_hit_tokens/prompt_cache_miss_tokens are its own fields on top
+// of the standard OpenAI prompt_tokens/completion_tokens; Groq won't send
+// the cache fields (it has no equivalent caching), just the standard ones.
+type LLMChunk = {
+  choices?: { delta?: { content?: string | null } }[];
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
+  };
+};
 type LLMResult =
   | { ok: true; stream: AsyncIterable<LLMChunk>; provider: "deepseek" | "groq_fallback" }
   | { ok: false; message: string };
@@ -358,6 +371,7 @@ const LLM_COMMON_PARAMS = {
   temperature: 0.85,
   top_p: 0.9,
   stream: true as const,
+  stream_options: { include_usage: true },
   stop: ["\n\n", "Human:", "User:", "Assistant:"],
 };
 
@@ -600,6 +614,11 @@ export async function POST(req: NextRequest) {
   // first SSE event sent to the client (that's the emotion tag, parsed out
   // of this same first chunk further down).
   let firstToken = true;
+  // Only ever populated by the final chunk of the stream (empty/no delta,
+  // usage set) — thanks to stream_options.include_usage above. Logged once
+  // the stream ends (see finally block below); undefined if the provider
+  // never sent one.
+  let finalUsage: LLMChunk["usage"] | undefined;
 
   // Safety net for DeepSeek V4's "thinking" mode: even with it disabled via
   // the `thinking` param, a <think>...</think> block that slips through
@@ -651,6 +670,11 @@ export async function POST(req: NextRequest) {
     async start(controller) {
       try {
         for await (const chunk of result.stream) {
+          // The usage-only final chunk has no delta content, so it must be
+          // captured before the `if (!rawDelta) continue` below — otherwise
+          // it gets skipped without ever being inspected.
+          if (chunk.usage) finalUsage = chunk.usage;
+
           const rawDelta = chunk.choices?.[0]?.delta?.content ?? "";
           if (!rawDelta) continue;
 
@@ -719,6 +743,16 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.error("Groq stream error:", err);
       } finally {
+        if (finalUsage) {
+          // cache_hit/cache_miss are DeepSeek-specific — 0 on Groq (no
+          // equivalent caching), not a sign anything is broken there.
+          console.log(
+            `[LLM] usage: prompt=${finalUsage.prompt_tokens ?? "?"}, ` +
+            `cache_hit=${finalUsage.prompt_cache_hit_tokens ?? 0}, ` +
+            `cache_miss=${finalUsage.prompt_cache_miss_tokens ?? 0}, ` +
+            `completion=${finalUsage.completion_tokens ?? "?"}`
+          );
+        }
         // Point B — persist the assembled assistant message once the stream
         // closes. Not awaited: must never delay [DONE]/close, which is the
         // client's only signal that "Thinking" has ended.
