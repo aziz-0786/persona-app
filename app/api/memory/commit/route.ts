@@ -109,5 +109,6 @@ ${transcript}`;
   // fine, unlike /api/chat's SSE stream.
   await upsertMemory(personaId, facts);
 
+  console.log(`[MEMORY] commit complete — postgres: ${rows.length}, facts: ${facts.length}`);
   return NextResponse.json({ stored: rows.length, facts });
 }

@@ -789,20 +789,23 @@ export default function CallPage() {
   }
 
   async function endCall() {
-    cleanupRef.current?.();
-
+    // Fire memory commit — fire-and-forget, never blocks navigation. Was
+    // previously `await`ed with a bare `catch {}`, which (a) stalled hangup
+    // for as long as the DeepSeek/Groq extraction call took, and (b)
+    // silently swallowed any failure (401, 500, network) with zero
+    // visibility — a real error looked identical to "nothing happened."
     if (historyRef.current.length > 0) {
-      try {
-        await fetch("/api/memory/commit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            personaId,
-            transcript: historyRef.current.map((t) => `${t.role}: ${t.content}`).join("\n"),
-          }),
-        });
-      } catch {}
+      fetch("/api/memory/commit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personaId,
+          transcript: historyRef.current.map((t) => `${t.role}: ${t.content}`).join("\n"),
+        }),
+      }).catch((err) => console.error("[MEMORY COMMIT]", err));
     }
+
+    cleanupRef.current?.();
 
     // Fire-and-forget — a DB failure here must never block navigation back
     // to the dashboard. Client component: goes through /api/call-sessions
