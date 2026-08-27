@@ -57,15 +57,31 @@ export const runtime = "nodejs";
 export const maxDuration = 30;
 
 // ─── Zone 2: Human Speech Patterns — the naturalness core ─────────────────────
-// The leading emotion-tag instruction is load-bearing infra, not style copy —
-// the SSE loop below (~L354) parses that literal [tag] prefix off the model's
-// first tokens, so it stays even though the rest of this zone is style-only.
+// The leading FORMAT instruction is load-bearing infra, not style copy — the
+// SSE loop below parses that literal "LYRA_EMOTION:<word>|" prefix off the
+// model's first tokens, so it stays even though the rest of this zone is
+// style-only.
 function buildZone2(
   persona: typeof personas.$inferSelect,
   user: { displayName: string | null; profileBio: string | null }
 ): string {
   const userName = user.displayName ?? "them";
-  return `Prefix every reply with exactly one emotion tag on its own: [happy] [amused] [calm] [sad] [angry] [surprised] [thinking]. Place it first, before any text.
+  return `FORMAT — the very first thing you output must be your emotion label
+in this exact format, with no space around the pipe:
+
+  LYRA_EMOTION:calm|rest of your response here
+
+The label must be exactly one word from this list:
+happy, sad, calm, angry, surprised, amused, curious, worried, warm
+
+The pipe character | is the separator. Your response text starts
+immediately after it, on the same line. No brackets. No newlines
+before the pipe. Nothing before LYRA_EMOTION:.
+
+Wrong:  [calm] Hey, how's it going?
+Wrong:  calm | Hey, how's it going?
+Wrong:  LYRA_EMOTION: calm | Hey
+Right:  LYRA_EMOTION:calm|Hey, how's it going?
 
 You speak the way people actually talk, not the way people write.
 
@@ -456,6 +472,7 @@ async function callLLM(
 }
 
 export async function POST(req: NextRequest) {
+  console.log(`[CHAT] request received at ${Date.now()}`);
   const session = await auth();
   if (!session?.user) {
     return new Response("Unauthorized", { status: 401 });
@@ -531,6 +548,7 @@ export async function POST(req: NextRequest) {
     return stubStreamResponse();
   }
 
+  const llmStart = Date.now();
   const result = await callLLM(messages);
 
   if (!result.ok) {
@@ -550,17 +568,37 @@ export async function POST(req: NextRequest) {
     return result;
   }
 
-  // Extract emotion tag, strip from text. Unlike the old RunPod fetch, the
-  // Groq SDK already parses each SSE event for us — no raw-byte buffering
-  // needed here.
+  // Extract the "LYRA_EMOTION:<word>|" prefix, strip from text. Unlike the
+  // old RunPod fetch, the Groq SDK already parses each SSE event for us —
+  // no raw-byte buffering needed here.
+  const EMOTION_PREFIX = "LYRA_EMOTION:";
+  const EMOTION_SEPARATOR = "|";
+  const VALID_EMOTIONS = new Set([
+    "happy", "sad", "calm", "angry", "surprised",
+    "amused", "curious", "worried", "warm", "neutral",
+  ]);
+  // Model ignored the format and no "|" ever showed up — don't hold real
+  // content hostage waiting for one indefinitely.
+  const EMOTION_FALLBACK_CHARS = 60;
+
   let emotionEmitted = false;
   let textBuffer = "";
+  // Was set on the old bracket-tag path to compensate for the model fusing
+  // the tag with a leading character of the next token (e.g.
+  // "[surprised]h, hello!"). The pipe format has an unambiguous split point
+  // (indexOf("|")) with no equivalent fusion case, so nothing sets this true
+  // anymore — kept, inert, rather than deleting stripStrayLeadingChar in a
+  // task scoped to the emotion-extraction logic only.
   let pendingTrim = false;
   // Accumulated for Point B persistence once the stream closes — mirrors
   // exactly what the client actually receives as `content` (tag already
   // stripped), not the raw model output.
   let fullAssistantText = "";
   let detectedEmotion: string | null = null;
+  // Fires once, on the first non-empty chunk from the LLM stream — not the
+  // first SSE event sent to the client (that's the emotion tag, parsed out
+  // of this same first chunk further down).
+  let firstToken = true;
 
   // Safety net for DeepSeek V4's "thinking" mode: even with it disabled via
   // the `thinking` param, a <think>...</think> block that slips through
@@ -615,28 +653,43 @@ export async function POST(req: NextRequest) {
           const rawDelta = chunk.choices?.[0]?.delta?.content ?? "";
           if (!rawDelta) continue;
 
+          if (firstToken) {
+            console.log(`[LLM] TTFT: ${Date.now() - llmStart}ms`);
+            firstToken = false;
+          }
+
           const delta = stripThinkTags(rawDelta);
           if (!delta) continue;
 
           textBuffer += delta;
 
-          // Extract [emotion] tag from the very start of the response
+          // Extract "LYRA_EMOTION:<word>|" prefix from the very start of the
+          // response — textBuffer already serves as the accumulation buffer
+          // (reset to "" once emitted below), so no separate buffer needed.
           if (!emotionEmitted) {
-            const match = textBuffer.match(/^\s*\[(\w+)\]\s*/);
-            if (match) {
-              const emotion = match[1].toLowerCase();
+            const sepIdx = textBuffer.indexOf(EMOTION_SEPARATOR);
+            if (sepIdx !== -1) {
+              const prefixPart = textBuffer.substring(0, sepIdx);
+              const labelIdx = prefixPart.indexOf(EMOTION_PREFIX);
+              const rawEmotion = labelIdx !== -1
+                ? prefixPart.substring(labelIdx + EMOTION_PREFIX.length).trim().toLowerCase()
+                : "calm";
+              const emotion = VALID_EMOTIONS.has(rawEmotion) ? rawEmotion : "calm";
+
               detectedEmotion = emotion;
               console.log('[EMOTION] emitting:', detectedEmotion);
               controller.enqueue(
                 encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion })}\n\n`)
               );
               emotionEmitted = true;
-              pendingTrim = true;
-              // Slice point is after the FULL match — tag plus any trailing
-              // whitespace \s* already consumed, whether zero or more chars.
-              textBuffer = textBuffer.slice(match[0].length);
-            } else if (textBuffer.length > 20) {
-              // No tag found — emit default
+              // Slice point is right after the pipe — everything from here
+              // on is real response content, fed through the normal
+              // content-emit path below in this same iteration.
+              textBuffer = textBuffer.slice(sepIdx + EMOTION_SEPARATOR.length);
+            } else if (textBuffer.length > EMOTION_FALLBACK_CHARS) {
+              // No pipe found — emit default. textBuffer is left untouched
+              // (not sliced) so the full accumulated text flows through as
+              // content immediately below; nothing is dropped.
               detectedEmotion = "calm";
               console.log('[EMOTION] emitting:', detectedEmotion);
               controller.enqueue(

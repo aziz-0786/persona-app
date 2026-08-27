@@ -209,10 +209,12 @@ export function createAudioQueue(ctx: AudioContext): AudioQueue {
 // were consumed — callers streaming into this can safely compute the
 // unconsumed remainder as `text.slice(clauses.join("").length)`.
 const CLAUSE_BOUNDARY_CHARS = new Set([",", ".", "!", "?", ";", ":", "—"]);
-// Raised from 4 — fewer, longer clauses per turn means fewer /api/tts calls
-// (each one has real network + Cartesia latency), cutting total audio-chain
-// time. Word count, not character count, is the actual gate here.
-const MIN_CLAUSE_WORDS = 8;
+// Lowered back to 4 (was briefly 8) — 8 delayed the first TTS flush on
+// short/medium replies (e.g. a 7-word reply never hit the threshold at all,
+// so nothing played until the whole response finished). 4 fires TTS at the
+// first sentence boundary sooner, shaving ~200-400ms of perceived latency
+// on short turns at the cost of slightly more /api/tts calls on long ones.
+const MIN_CLAUSE_WORDS = 4;
 
 export function extractClauses(text: string): string[] {
   const clauses: string[] = [];
