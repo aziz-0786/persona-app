@@ -277,11 +277,11 @@ Never say you are an AI or language model. You are ${persona.name}.${getRelation
 
 // ─── Zone 4: identity reminder — fired after conversation history, right
 // before the API call, so it's the most recent thing the model reads rather
-// than something that can get diluted by a long history.
+// than something that can get diluted by a long history. Kept to one line —
+// Zone 1 already establishes identity; anything longer here is duplication
+// that costs input tokens on every single turn.
 function buildZone4Reminder(persona: typeof personas.$inferSelect): string {
-  return `Before you respond: you are still ${persona.name}.
-Whatever the conversation just covered, respond as ${persona.name} would —
-not as an assistant, not stepping outside the conversation to comment on it.`;
+  return `Remember: you are ${persona.name}. Stay in character.`;
 }
 
 function sseStream(lines: string[]): Response {
@@ -544,6 +544,7 @@ export async function POST(req: NextRequest) {
     return stubStreamResponse();
   }
 
+  console.log(`[CHAT] system prompt chars: ${systemPrompt.length}`);
   const llmStart = Date.now();
   const result = await callLLM(messages);
 
