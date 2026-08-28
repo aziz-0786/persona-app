@@ -625,6 +625,14 @@ export async function POST(req: NextRequest) {
   // Model ignored the format and no "|" ever showed up — don't hold real
   // content hostage waiting for one indefinitely.
   const EMOTION_FALLBACK_CHARS = 60;
+  // Second-attempt window: between 60 and 120 chars with still no pipe, try
+  // a loose LYRA_EMOTION: match (no pipe required) before giving up outright
+  // — covers DeepSeek emitting the label but dropping/mangling the
+  // separator itself, not just extra whitespace before it (the existing
+  // pipe-based extraction already tolerates leading whitespace/newlines
+  // fine, since it searches for EMOTION_PREFIX anywhere in the pre-pipe
+  // text, not anchored at position 0).
+  const EMOTION_HARD_LIMIT_CHARS = 120;
   // "warm" reads less flat than "calm" for the kind of casual, unprefixed
   // reply that actually lands here (e.g. "Yeah, honestly...") — but note
   // CARTESIA_EMOTION_MAP in /api/tts/route.ts has no entry for "warm" (or
@@ -749,20 +757,48 @@ export async function POST(req: NextRequest) {
               // content-emit path below in this same iteration.
               textBuffer = textBuffer.slice(sepIdx + EMOTION_SEPARATOR.length);
             } else if (textBuffer.length > EMOTION_FALLBACK_CHARS) {
-              // No pipe found — emit default. textBuffer is left untouched
-              // (not sliced) so the full accumulated text flows through as
-              // content immediately below; nothing is dropped.
-              // TEMP DEBUG — this path means DeepSeek never emitted a "|" at
-              // all within the first 60 chars, i.e. it isn't even attempting
-              // the LYRA_EMOTION format, distinct from emitting an invalid
-              // word (that's the VALID_EMOTIONS-filter path above).
-              console.log(`[EMOTION] no pipe found, forcing ${fallbackEmotion}. raw buffer:`, textBuffer.slice(0, 80));
-              detectedEmotion = fallbackEmotion;
-              console.log('[EMOTION] emitting:', detectedEmotion);
-              controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion: fallbackEmotion })}\n\n`)
-              );
-              emotionEmitted = true;
+              // Tier 2 (60-120 chars, no pipe yet): try a loose match on the
+              // literal "LYRA_EMOTION:<word>" text without requiring a pipe
+              // — covers DeepSeek emitting the label but dropping/mangling
+              // the separator itself. No pipe means no reliable split point
+              // for where content begins, so textBuffer is left untouched
+              // either way (same trade-off Tier 3 below already accepts).
+              const looseMatch = textBuffer.match(/LYRA_EMOTION:\s*([a-z]+)/i);
+              const looseCandidate = looseMatch ? looseMatch[1].toLowerCase() : null;
+
+              if (looseCandidate && VALID_EMOTIONS.has(looseCandidate)) {
+                console.log('[EMOTION] recovered via loose prefix match (no pipe):', looseCandidate);
+                detectedEmotion = looseCandidate;
+                console.log('[EMOTION] emitting:', detectedEmotion);
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion: looseCandidate })}\n\n`)
+                );
+                emotionEmitted = true;
+              } else if (textBuffer.length > EMOTION_HARD_LIMIT_CHARS) {
+                // Tier 3 — nothing worked by 120 chars. Keyword-guess from
+                // the raw text as a last resort, better than always
+                // defaulting to fallbackEmotion regardless of register.
+                // textBuffer is left untouched, same as before.
+                const lower = textBuffer.toLowerCase();
+                let guessed = fallbackEmotion;
+                if (lower.includes("haha") || lower.includes("funny") || lower.includes("lol")) {
+                  guessed = "amused";
+                } else if (lower.includes("wow") || lower.includes("really?") || lower.includes("wait")) {
+                  guessed = "surprised";
+                } else if (lower.includes("honestly") || lower.includes("i think") || lower.includes("you know")) {
+                  guessed = "thoughtful";
+                }
+
+                console.log(`[EMOTION] no pipe/prefix found by ${EMOTION_HARD_LIMIT_CHARS} chars, keyword-guessed: ${guessed}. raw buffer:`, textBuffer.slice(0, 100));
+                detectedEmotion = guessed;
+                console.log('[EMOTION] emitting:', detectedEmotion);
+                controller.enqueue(
+                  encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion: guessed })}\n\n`)
+                );
+                emotionEmitted = true;
+              }
+              // else: still between 60-120 chars with no match yet — keep
+              // accumulating, try again next chunk.
             }
           }
 
