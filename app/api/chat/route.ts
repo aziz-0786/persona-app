@@ -495,6 +495,11 @@ export async function POST(req: NextRequest) {
   }
 
   const safeEmotionHistory = sanitizeEmotionHistory(emotionHistory);
+  // TEMP DEBUG — logs the sanitized array actually injected into Zone 2.5
+  // (buildZone2_5 receives safeEmotionHistory, not the raw request field),
+  // to confirm the client is tracking/sending history and it survives
+  // sanitizeEmotionHistory's filter/slice intact.
+  console.log('[EMOTION HISTORY]', safeEmotionHistory);
 
   // Load persona (verify ownership)
   const [persona] = await db
@@ -536,6 +541,13 @@ export async function POST(req: NextRequest) {
     user ?? { displayName: null, profileBio: null },
     safeEmotionHistory
   );
+
+  // TEMP DEBUG — confirms the EMOTION EXPRESSION block (Zone 2) actually
+  // made it into the assembled prompt string sent to the LLM, rather than
+  // being dropped/overwritten somewhere in buildSystemPrompt's join.
+  const emotionSectionStart = systemPrompt.indexOf('EMOTION EXPRESSION');
+  const emotionSectionEnd = systemPrompt.indexOf('\n\n', emotionSectionStart + 100);
+  console.log('[DEBUG ZONE2]', systemPrompt.slice(emotionSectionStart, emotionSectionEnd));
 
   // Messages array: Zones 0-3 up front, last 6 turns of history, then the new
   // user message, then Zone 4 as its own trailing system message — fired
@@ -699,7 +711,12 @@ export async function POST(req: NextRequest) {
               const rawEmotion = labelIdx !== -1
                 ? prefixPart.substring(labelIdx + EMOTION_PREFIX.length).trim().toLowerCase()
                 : "calm";
+              // TEMP DEBUG — distinguishes "DeepSeek generated variety but
+              // VALID_EMOTIONS downgraded it" from "DeepSeek itself emitted
+              // calm". Logged before the filter runs.
+              console.log('[EMOTION] raw from LLM:', rawEmotion);
               const emotion = VALID_EMOTIONS.has(rawEmotion) ? rawEmotion : "calm";
+              console.log('[EMOTION] after filter:', emotion);
 
               detectedEmotion = emotion;
               console.log('[EMOTION] emitting:', detectedEmotion);
@@ -715,6 +732,11 @@ export async function POST(req: NextRequest) {
               // No pipe found — emit default. textBuffer is left untouched
               // (not sliced) so the full accumulated text flows through as
               // content immediately below; nothing is dropped.
+              // TEMP DEBUG — this path means DeepSeek never emitted a "|" at
+              // all within the first 60 chars, i.e. it isn't even attempting
+              // the LYRA_EMOTION format, distinct from emitting an invalid
+              // word (that's the VALID_EMOTIONS-filter path above).
+              console.log('[EMOTION] no pipe found, forcing calm. raw buffer:', textBuffer.slice(0, 80));
               detectedEmotion = "calm";
               console.log('[EMOTION] emitting:', detectedEmotion);
               controller.enqueue(
