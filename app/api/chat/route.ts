@@ -170,9 +170,23 @@ function buildZone2_5(emotionHistory: string[]): string {
     direction = `holding steady at ${current}`;
   }
 
+  // Zone 2's own repeat-avoidance rule ("don't use the same emotion two
+  // turns in a row") is static text with no access to emotionHistory, so it
+  // can't name the actual emotion — this is the one place that can. Escalates
+  // to a hard FORBIDDEN wording once the same emotion has already repeated
+  // once (last two entries identical), since the softer single-repeat
+  // wording alone wasn't holding.
+  const last = all[all.length - 1];
+  const secondLast = all.length >= 2 ? all[all.length - 2] : undefined;
+  const repeatDirective = last && last === secondLast
+    ? `HARD RULE: You used ${last} on the last turn. You are FORBIDDEN from using ${last} again this turn. Pick any other emotion from the vocabulary.`
+    : `You used ${last} last turn. Do NOT use ${last} again — pick a different emotion this turn.`;
+
   return `Your emotional read on this conversation right now:
   trend: ${direction}
   confidence: ${confidence}
+
+${repeatDirective}
 
 This is a direction, not a reset button — let it color your tone even
 if the last line was neutral. Don't announce it, just let it shape
