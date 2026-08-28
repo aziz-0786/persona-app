@@ -121,6 +121,9 @@ Rules:
   picked randomly. Ask yourself: what would ${persona.name} actually
   feel reading that exact message? Pick that.
 
+CRITICAL: Every single response MUST start with LYRA_EMOTION:<emotion>| —
+no exceptions, even for short replies. Never skip this prefix.
+
 Forbidden: "Certainly!", "I'd be happy to", "As an AI", "As ${persona.name}",
 "Great question!", or any phrasing that sounds like a help desk.
 This is a person talking to someone they know, not a service.`;
@@ -281,7 +284,8 @@ Never say you are an AI or language model. You are ${persona.name}.${getRelation
 // Zone 1 already establishes identity; anything longer here is duplication
 // that costs input tokens on every single turn.
 function buildZone4Reminder(persona: typeof personas.$inferSelect): string {
-  return `Remember: you are ${persona.name}. Stay in character.`;
+  return `Remember: you are ${persona.name}. Stay in character.
+And always start your response with LYRA_EMOTION:<emotion>|`;
 }
 
 function sseStream(lines: string[]): Response {
@@ -607,6 +611,13 @@ export async function POST(req: NextRequest) {
   // Model ignored the format and no "|" ever showed up — don't hold real
   // content hostage waiting for one indefinitely.
   const EMOTION_FALLBACK_CHARS = 60;
+  // "warm" reads less flat than "calm" for the kind of casual, unprefixed
+  // reply that actually lands here (e.g. "Yeah, honestly...") — but note
+  // CARTESIA_EMOTION_MAP in /api/tts/route.ts has no entry for "warm" (or
+  // most of the current 10-word vocabulary), so this still renders as
+  // Cartesia's generic "neutral" voice, same as "calm" did. The text label
+  // changes; the actual TTS performance for this fallback path doesn't.
+  const fallbackEmotion = "warm";
 
   let emotionEmitted = false;
   let textBuffer = "";
@@ -736,11 +747,11 @@ export async function POST(req: NextRequest) {
               // all within the first 60 chars, i.e. it isn't even attempting
               // the LYRA_EMOTION format, distinct from emitting an invalid
               // word (that's the VALID_EMOTIONS-filter path above).
-              console.log('[EMOTION] no pipe found, forcing calm. raw buffer:', textBuffer.slice(0, 80));
-              detectedEmotion = "calm";
+              console.log(`[EMOTION] no pipe found, forcing ${fallbackEmotion}. raw buffer:`, textBuffer.slice(0, 80));
+              detectedEmotion = fallbackEmotion;
               console.log('[EMOTION] emitting:', detectedEmotion);
               controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion: "calm" })}\n\n`)
+                encoder.encode(`data: ${JSON.stringify({ type: "emotion", emotion: fallbackEmotion })}\n\n`)
               );
               emotionEmitted = true;
             }
