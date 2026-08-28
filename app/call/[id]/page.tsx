@@ -130,6 +130,11 @@ export default function CallPage() {
   const ttsAbortRef = useRef<AbortController | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const audioQueueRef = useRef<AudioQueue | null>(null);
+  // Set whenever TTS playback actually begins (first clause's audio, or the
+  // greeting) — handleBargein uses this to ignore a SpeechStarted event that
+  // arrives too soon after, since that's much more likely to be ambient
+  // noise / speaker bleed than a genuine interruption.
+  const ttsStartedAtRef = useRef<number>(0);
   // Accumulates every is_final Results transcript for the current utterance
   // — Results no longer submit turns directly; UtteranceEnd (VAD-based,
   // vad_events=true) does, using whatever has accumulated here since the
@@ -292,6 +297,15 @@ export default function CallPage() {
   // aborted); a SpeechStarted while idle/listening is just normal speech.
   function handleBargein() {
     if (stateRef.current !== "speaking") return;
+    // Ignore SpeechStarted events in the first 600ms of TTS playback — a
+    // burst of background noise (fan, ambient sound) right as audio starts
+    // is far more likely than a genuine interruption that fast; a real
+    // barge-in later in the same response still aborts normally.
+    const msSinceTTSStarted = Date.now() - ttsStartedAtRef.current;
+    if (msSinceTTSStarted < 600) {
+      console.log("[CALL] barge-in ignored —", msSinceTTSStarted, "ms since TTS started, likely noise");
+      return;
+    }
     console.log("[CALL] barge-in — aborting in-flight requests");
     llmAbortRef.current?.abort();
     ttsAbortRef.current?.abort();
@@ -403,6 +417,7 @@ export default function CallPage() {
           // its purpose.
           fillerPlayingRef.current = false;
           stopFiller();
+          ttsStartedAtRef.current = Date.now();
           setConvState("speaking");
           queue.onended(() => {
             if (completeFired) return;
@@ -700,6 +715,7 @@ export default function CallPage() {
       const ctx = getAudioContext();
       await ctx.resume(); // safe to call again, idempotent
       const buf = await decodeB64ToAudioBuffer(greetingAudioRef.current, ctx);
+      ttsStartedAtRef.current = Date.now();
       setConvState("speaking");
       const queue = getAudioQueue();
       queue.onended(() => {
