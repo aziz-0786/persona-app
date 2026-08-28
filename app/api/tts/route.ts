@@ -51,6 +51,17 @@ const CARTESIA_EMOTION_MAP: Record<string, { emotion: string }> = {
   calm: { emotion: "calm" },
   thinking: { emotion: "calm" },
   angry: { emotion: "angry" },
+  // Added to cover Zone 2's current 10-word vocabulary. No intensity dial
+  // exists here (see comment above — speed/volume disabled, emotion is the
+  // only field sent), so "lower/higher intensity if supported" collapses to
+  // "identical" for warm/excited, same as the task's own fallback clause.
+  curious: { emotion: "calm" },     // same as thinking, which itself maps to calm
+  warm: { emotion: "happy" },       // same as happy — no intensity dial to lower
+  excited: { emotion: "happy" },    // same as happy — no intensity dial to raise
+  thoughtful: { emotion: "calm" },  // same as thinking, which itself maps to calm
+  playful: { emotion: "happy" },    // same as amused, which itself maps to happy
+  gentle: { emotion: "calm" },
+  wistful: { emotion: "sad" },
   default: { emotion: "neutral" },
 };
 

@@ -546,13 +546,6 @@ export async function POST(req: NextRequest) {
     safeEmotionHistory
   );
 
-  // TEMP DEBUG — confirms the EMOTION EXPRESSION block (Zone 2) actually
-  // made it into the assembled prompt string sent to the LLM, rather than
-  // being dropped/overwritten somewhere in buildSystemPrompt's join.
-  const emotionSectionStart = systemPrompt.indexOf('EMOTION EXPRESSION');
-  const emotionSectionEnd = systemPrompt.indexOf('\n\n', emotionSectionStart + 100);
-  console.log('[DEBUG ZONE2]', systemPrompt.slice(emotionSectionStart, emotionSectionEnd));
-
   // Messages array: Zones 0-3 up front, last 6 turns of history, then the new
   // user message, then Zone 4 as its own trailing system message — fired
   // after history so it's the last thing the model reads before replying.
@@ -722,12 +715,7 @@ export async function POST(req: NextRequest) {
               const rawEmotion = labelIdx !== -1
                 ? prefixPart.substring(labelIdx + EMOTION_PREFIX.length).trim().toLowerCase()
                 : "calm";
-              // TEMP DEBUG — distinguishes "DeepSeek generated variety but
-              // VALID_EMOTIONS downgraded it" from "DeepSeek itself emitted
-              // calm". Logged before the filter runs.
-              console.log('[EMOTION] raw from LLM:', rawEmotion);
               const emotion = VALID_EMOTIONS.has(rawEmotion) ? rawEmotion : "calm";
-              console.log('[EMOTION] after filter:', emotion);
 
               detectedEmotion = emotion;
               console.log('[EMOTION] emitting:', detectedEmotion);
