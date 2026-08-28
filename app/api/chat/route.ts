@@ -371,7 +371,12 @@ type LLMResult =
   | { ok: false; message: string };
 
 const LLM_COMMON_PARAMS = {
-  max_tokens: 150,
+  // Was 150 — responses were hitting this cap mid-sentence (confirmed via a
+  // live benchmark: every turn truncated mid-word, e.g. "...How abou").
+  // Zone 2 already caps replies at 1-2 sentences via the prompt; this is a
+  // safety net that shouldn't be hit in normal operation, not the actual
+  // length control.
+  max_tokens: 300,
   temperature: 0.85,
   top_p: 0.9,
   stream: true as const,
