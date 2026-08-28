@@ -112,6 +112,12 @@ export default function CallPage() {
   const elapsedIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const historyRef = useRef<HistoryTurn[]>([]);
+  // Accumulated across turns, sent as emotionHistory on every /api/chat
+  // request so Zone 2.5 (server-side mood trend) has something to read —
+  // was never populated or sent at all before this, so Zone 2.5 was always
+  // seeing []. Appended only when the emotion SSE event arrives for the
+  // turn that's still current (same turnId guard as setEmotion below).
+  const emotionHistoryRef = useRef<string[]>([]);
   // Incremented on every submitTurn call AND on every barge-in/WS-reconnect
   // — lets stale async work (a superseded turn's SSE loop or TTS chain, or
   // one invalidated by the user talking over the persona) recognize it's
@@ -423,6 +429,7 @@ export default function CallPage() {
           personaId,
           message: trimmed,
           history: historyRef.current.slice(-6),
+          emotionHistory: emotionHistoryRef.current,
         }),
       });
 
@@ -456,7 +463,10 @@ export default function CallPage() {
             const parsed = JSON.parse(line);
             if (parsed.type === "emotion") {
               liveEmotion = parsed.emotion;
-              if (turnIdRef.current === myTurnId) setEmotion(parsed.emotion);
+              if (turnIdRef.current === myTurnId) {
+                setEmotion(parsed.emotion);
+                emotionHistoryRef.current = [...emotionHistoryRef.current, parsed.emotion].slice(-10);
+              }
             } else if (parsed.type === "error") {
               if (turnIdRef.current === myTurnId) setConvState("listening");
               return;
