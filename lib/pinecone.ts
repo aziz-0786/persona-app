@@ -90,10 +90,24 @@ async function searchTextIndex(
 
   try {
     const namespace = pc.index(indexName).namespace(personaId);
+    // No `vector`/length to log here — this is Pinecone's integrated-
+    // inference searchRecords API, which embeds queryText server-side, not
+    // the classic query-by-vector API. namespace = personaId (confirms
+    // whether the query and upsertMemory's write actually landed in the
+    // same namespace).
+    console.log(`[RAG] pinecone query — index: ${indexName}, namespace: ${personaId}, topK: ${topK}`);
     const response = await namespace.searchRecords({
       query: { topK, inputs: { text: queryText } },
       fields: [field],
     });
+
+    // Logged before the field-presence filter below, so a hit that scored
+    // but got filtered out (empty/missing field) is still visible here —
+    // tells us whether the issue is zero matches vs. score/field filtering.
+    console.log(
+      `[RAG] pinecone raw response — matches: ${response.result.hits.length}, ` +
+      `scores: ${response.result.hits.map((h) => h._score?.toFixed(3)).join(", ")}`
+    );
 
     return response.result.hits
       .map((hit) => (hit.fields as Record<string, string> | undefined)?.[field])

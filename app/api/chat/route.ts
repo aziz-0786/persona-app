@@ -551,6 +551,8 @@ export async function POST(req: NextRequest) {
     .where(eq(users.id, session.user.id))
     .limit(1);
 
+  console.log(`[RAG] querying for personaId: ${personaId}, message: "${message?.slice(0, 50)}"`);
+
   // Pinecone integrated inference embeds `message` server-side — no separate
   // embedding call. Degrades to [] if the persona has no memories yet.
   const memories = process.env.PINECONE_API_KEY ? await queryMemories(personaId, message) : [];
