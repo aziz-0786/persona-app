@@ -539,15 +539,14 @@ export async function POST(req: NextRequest) {
   console.log(`[TIMING] body parsed: ${Date.now() - t0}ms`);
 
   // Warmup ping — exercises auth + the persona ownership lookup (warms the
-  // Postgres/Neon connection pool, the actual serverless cold-start cost)
-  // without spending a DeepSeek call. Still requires a real session and a
-  // real personaId the caller owns, same as a normal request.
+  // Neon pool connection) without spending a DeepSeek call. Routed through
+  // getPersonaWithCache (not its own inline query) so the warmup also
+  // populates the persona cache — otherwise the pool got warmed but the
+  // first REAL turn still paid a full cache-miss lookup. Still requires a
+  // real session and a real personaId the caller owns, same as a normal
+  // request.
   if (message === "__warmup__") {
-    const [warmupPersona] = await db
-      .select({ id: personas.id })
-      .from(personas)
-      .where(and(eq(personas.id, personaId), eq(personas.userId, session.user.id)))
-      .limit(1);
+    const warmupPersona = await getPersonaWithCache(personaId, session.user.id);
     if (!warmupPersona) {
       return new Response("Persona not found", { status: 404 });
     }
