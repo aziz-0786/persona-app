@@ -8,6 +8,33 @@ import { eq, and } from "drizzle-orm";
 import { queryMemories } from "@/lib/pinecone";
 import { detectAutoPin } from "@/lib/auto-pin";
 
+// Persona ownership cache — avoids a per-turn Neon round-trip for a lookup
+// whose result can't change mid-call (a persona's ownership is fixed for
+// the lifetime of a voice call). Key includes both userId and personaId, so
+// a user can only ever read their own persona's cached result. 5min TTL —
+// if a persona is deleted, worst case is 5 more minutes of stale access,
+// acceptable for a voice app.
+const personaCache = new Map<string, { value: typeof personas.$inferSelect | null; expiresAt: number }>();
+const PERSONA_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function getPersonaWithCache(personaId: string, userId: string) {
+  const cacheKey = `${userId}:${personaId}`;
+  const cached = personaCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    console.log(`[TIMING] persona lookup: 0ms (cache hit)`);
+    return cached.value;
+  }
+  const dbStart = Date.now();
+  const [persona] = await db
+    .select()
+    .from(personas)
+    .where(and(eq(personas.id, personaId), eq(personas.userId, userId)))
+    .limit(1);
+  console.log(`[TIMING] persona lookup: ${Date.now() - dbStart}ms (db)`);
+  personaCache.set(cacheKey, { value: persona ?? null, expiresAt: Date.now() + PERSONA_CACHE_TTL_MS });
+  return persona ?? null;
+}
+
 // Inserts a chat message and, if it matches an auto-pin rule, a linked
 // pinned_memories row — shared by both the user-message and assistant-
 // message persistence points below. Callers must never `await` this on the
@@ -537,17 +564,13 @@ export async function POST(req: NextRequest) {
   // sanitizeEmotionHistory's filter/slice intact.
   console.log('[EMOTION HISTORY]', safeEmotionHistory);
 
-  // Load persona (verify ownership)
-  const [persona] = await db
-    .select()
-    .from(personas)
-    .where(and(eq(personas.id, personaId), eq(personas.userId, session.user.id)))
-    .limit(1);
+  // Load persona (verify ownership) — cached, see getPersonaWithCache above.
+  const persona = await getPersonaWithCache(personaId, session.user.id);
 
   if (!persona) {
     return new Response("Persona not found", { status: 404 });
   }
-  console.log(`[TIMING] persona lookup: ${Date.now() - t0}ms`);
+  console.log(`[TIMING] persona lookup total: ${Date.now() - t0}ms`);
 
   // Point A — persist the user's message before streaming starts. Not
   // awaited: a DB hiccup here must never delay or block the response.

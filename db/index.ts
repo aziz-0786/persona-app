@@ -1,7 +1,16 @@
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
+import { Pool } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-serverless";
 import * as schema from "./schema";
 
+// Was drizzle-orm/neon-http (@neondatabase/serverless's `neon()` HTTP
+// client) — that makes a fresh HTTPS request (DNS + TLS + round-trip) on
+// every single query, confirmed as a ~6s per-turn cost via [TIMING] logging
+// in app/api/chat/route.ts. This app runs as a persistent long-lived
+// process (Railway), not true request-scoped serverless, so a WebSocket
+// Pool that stays open across queries is the correct fit — same
+// @neondatabase/serverless package, no new dependency needed for the
+// driver itself.
+//
 // Lazy connection — DATABASE_URL isn't available during Next.js build-time
 // static analysis (only at runtime, once a route actually executes), so
 // throwing at module load broke the build. The Proxy defers the real
@@ -18,7 +27,8 @@ function getDb(): DrizzleDB {
   if (!_db) {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error("DATABASE_URL environment variable is not set");
-    _db = drizzle(neon(url), { schema });
+    const pool = new Pool({ connectionString: url });
+    _db = drizzle(pool, { schema });
   }
   return _db;
 }
