@@ -508,6 +508,25 @@ export async function POST(req: NextRequest) {
     return new Response("Missing personaId or message", { status: 400 });
   }
 
+  // Warmup ping — exercises auth + the persona ownership lookup (warms the
+  // Postgres/Neon connection pool, the actual serverless cold-start cost)
+  // without spending a DeepSeek call. Still requires a real session and a
+  // real personaId the caller owns, same as a normal request.
+  if (message === "__warmup__") {
+    const [warmupPersona] = await db
+      .select({ id: personas.id })
+      .from(personas)
+      .where(and(eq(personas.id, personaId), eq(personas.userId, session.user.id)))
+      .limit(1);
+    if (!warmupPersona) {
+      return new Response("Persona not found", { status: 404 });
+    }
+    return sseStream([
+      `data: ${JSON.stringify({ content: "" })}\n\n`,
+      "data: [DONE]\n\n",
+    ]);
+  }
+
   const safeEmotionHistory = sanitizeEmotionHistory(emotionHistory);
   // TEMP DEBUG — logs the sanitized array actually injected into Zone 2.5
   // (buildZone2_5 receives safeEmotionHistory, not the raw request field),
@@ -540,6 +559,13 @@ export async function POST(req: NextRequest) {
 
   // user lookup and RAG query are independent of each other — only
   // buildSystemPrompt() below needs both. Was sequential for no reason.
+  //
+  // ragStart/the .then() below time queryMemories() specifically, not the
+  // whole Promise.all — timing the combined await would conflate Pinecone's
+  // duration with the concurrent (unrelated) Postgres user lookup, which
+  // defeats the point of isolating whether the Pinecone fix actually
+  // worked.
+  const ragStart = Date.now();
   const [[user], memories] = await Promise.all([
     db
       .select({ displayName: users.displayName, profileBio: users.profileBio })
@@ -549,11 +575,13 @@ export async function POST(req: NextRequest) {
     // Pinecone integrated inference embeds `message` server-side — no
     // separate embedding call. Degrades to [] if the persona has no
     // memories yet.
-    process.env.PINECONE_API_KEY ? queryMemories(personaId, message) : Promise.resolve([]),
+    (process.env.PINECONE_API_KEY ? queryMemories(personaId, message) : Promise.resolve([])).then(
+      (result) => {
+        console.log(`[RAG] completed in ${Date.now() - ragStart}ms, memories: ${result.length}`);
+        return result;
+      }
+    ),
   ]);
-
-  console.log('[RAG] memories fetched:', memories?.length ?? 0,
-              memories?.map(m => m.substring(0, 50)));
 
   const systemPrompt = buildSystemPrompt(
     persona,

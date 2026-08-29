@@ -12,7 +12,18 @@ const EMBED_TEXT_FIELD = "chunk_text";
 // Integrated-inference upsert is capped at ~96 records per call.
 const UPSERT_BATCH_SIZE = 90;
 
+// Module-level singletons — initialized once per warm process, reused on
+// every call. getClient() was already a singleton; indexCache is new —
+// pc.index(name) was previously invoked fresh on every single request, and
+// Pinecone's own docs note that targeting an index by name without a cached
+// host triggers an implicit describe_index control-plane call under the
+// hood. Combined with the explicit listIndexes() call this file used to
+// make via indexExists() (removed below), RAG queries were paying for two
+// separate control-plane round trips before ever reaching the actual (fast)
+// data-plane search. Caching the returned Index object means both costs are
+// paid at most once per process, not once per chat turn.
 let client: Pinecone | null = null;
+const indexCache = new Map<string, ReturnType<Pinecone["index"]>>();
 
 function getClient(): Pinecone {
   if (!client) {
@@ -22,6 +33,13 @@ function getClient(): Pinecone {
     client = new Pinecone({ apiKey: process.env.PINECONE_API_KEY });
   }
   return client;
+}
+
+function getCachedIndex(indexName: string) {
+  if (!indexCache.has(indexName)) {
+    indexCache.set(indexName, getClient().index(indexName));
+  }
+  return indexCache.get(indexName)!;
 }
 
 async function ensureKnowledgeIndex() {
@@ -42,7 +60,7 @@ async function ensureKnowledgeIndex() {
     });
   }
 
-  return pc.index(KNOWLEDGE_INDEX_NAME);
+  return getCachedIndex(KNOWLEDGE_INDEX_NAME);
 }
 
 export interface KnowledgeChunkRecord {
@@ -70,14 +88,13 @@ export async function upsertKnowledgeChunks(
   }
 }
 
-async function indexExists(pc: Pinecone, indexName: string): Promise<boolean> {
-  const { indexes } = await pc.listIndexes();
-  return !!indexes?.some((idx) => idx.name === indexName);
-}
-
-// Shared by both knowledge and memory retrieval: checks the index exists
-// before querying, and never throws — an empty/missing namespace (e.g. a
-// persona with nothing ingested yet) just means no context to inject.
+// Shared by both knowledge and memory retrieval. No existence pre-check —
+// that used to cost a full listIndexes() control-plane round trip on every
+// single query (see the singleton comment above). If the index genuinely
+// doesn't exist yet (e.g. a persona whose first call hasn't ended, so
+// upsertMemory hasn't run), searchRecords() below fails and the catch
+// degrades to [] exactly as the old pre-check used to — same observable
+// behavior, without paying for a separate round trip to get there.
 async function searchTextIndex(
   indexName: string,
   personaId: string,
@@ -85,11 +102,8 @@ async function searchTextIndex(
   field: string,
   topK: number
 ): Promise<string[]> {
-  const pc = getClient();
-  if (!(await indexExists(pc, indexName))) return [];
-
   try {
-    const namespace = pc.index(indexName).namespace(personaId);
+    const namespace = getCachedIndex(indexName).namespace(personaId);
     // No `vector`/length to log here — this is Pinecone's integrated-
     // inference searchRecords API, which embeds queryText server-side, not
     // the classic query-by-vector API. namespace = personaId (confirms
@@ -162,7 +176,7 @@ async function ensureMemoriesIndex() {
     });
   }
 
-  return pc.index(MEMORIES_INDEX_NAME);
+  return getCachedIndex(MEMORIES_INDEX_NAME);
 }
 
 // Writes extracted facts into the persona's namespace — mirrors
@@ -208,18 +222,21 @@ export async function getMemoryIndexStats(): Promise<{
   totalVectorCount: number;
   namespaces: Record<string, { vectorCount: number }>;
 }> {
-  const pc = getClient();
-  if (!(await indexExists(pc, MEMORIES_INDEX_NAME))) {
+  try {
+    const stats = await getCachedIndex(MEMORIES_INDEX_NAME).describeIndexStats();
+    const namespaces: Record<string, { vectorCount: number }> = {};
+    for (const [ns, summary] of Object.entries(stats.namespaces ?? {})) {
+      namespaces[ns] = { vectorCount: summary.recordCount ?? 0 };
+    }
+    return { totalVectorCount: stats.totalRecordCount ?? 0, namespaces };
+  } catch (err) {
+    // Index doesn't exist yet (no persona has ever committed a memory) —
+    // same degrade-gracefully convention as searchTextIndex, reached by
+    // catching the real operation's failure instead of a separate
+    // existence pre-check.
+    console.error("[MEMORY] stats fetch failed:", err);
     return { totalVectorCount: 0, namespaces: {} };
   }
-
-  const stats = await pc.index(MEMORIES_INDEX_NAME).describeIndexStats();
-  const namespaces: Record<string, { vectorCount: number }> = {};
-  for (const [ns, summary] of Object.entries(stats.namespaces ?? {})) {
-    namespaces[ns] = { vectorCount: summary.recordCount ?? 0 };
-  }
-
-  return { totalVectorCount: stats.totalRecordCount ?? 0, namespaces };
 }
 
 export async function deleteKnowledgeNamespace(personaId: string): Promise<void> {
