@@ -89,15 +89,6 @@ LENGTH — 1–2 sentences per turn, almost always. Never a list.
 If something needs explaining, spread it across short turns rather
 than one long answer.
 
-DISFLUENCY — include 2–4 natural speech markers per turn.
-Never zero (that reads robotic), never more than 4 (that reads scripted),
-never two back to back:
-  "um" / "uh"          — before something that takes real thought
-  "you know" / "I mean" — when checking the other person is following
-  self-correction       — "I- I think—", "wait, actually—"
-If a reply comes out as one clean polished sentence with no texture,
-it slipped out of voice. It needs a rewrite before sending.
-
 TONE — match ${userName}'s energy level. Crisp input → crisp reply.
 Long emotional input → slower, warmer reply.
 Laugh or exclaim roughly 1 turn in every 4–5, not every turn.
@@ -545,17 +536,21 @@ export async function POST(req: NextRequest) {
     emotion: null,
   }).catch((err) => console.error("[CHAT PERSIST]", err));
 
-  const [user] = await db
-    .select({ displayName: users.displayName, profileBio: users.profileBio })
-    .from(users)
-    .where(eq(users.id, session.user.id))
-    .limit(1);
-
   console.log(`[RAG] querying for personaId: ${personaId}, message: "${message?.slice(0, 50)}"`);
 
-  // Pinecone integrated inference embeds `message` server-side — no separate
-  // embedding call. Degrades to [] if the persona has no memories yet.
-  const memories = process.env.PINECONE_API_KEY ? await queryMemories(personaId, message) : [];
+  // user lookup and RAG query are independent of each other — only
+  // buildSystemPrompt() below needs both. Was sequential for no reason.
+  const [[user], memories] = await Promise.all([
+    db
+      .select({ displayName: users.displayName, profileBio: users.profileBio })
+      .from(users)
+      .where(eq(users.id, session.user.id))
+      .limit(1),
+    // Pinecone integrated inference embeds `message` server-side — no
+    // separate embedding call. Degrades to [] if the persona has no
+    // memories yet.
+    process.env.PINECONE_API_KEY ? queryMemories(personaId, message) : Promise.resolve([]),
+  ]);
 
   console.log('[RAG] memories fetched:', memories?.length ?? 0,
               memories?.map(m => m.substring(0, 50)));
