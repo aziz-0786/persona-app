@@ -84,6 +84,17 @@ export default function CallPage() {
   // pattern as stateRef/state above).
   const [history, setHistory] = useState<HistoryTurn[]>([]);
   const [warmupDone, setWarmupDone] = useState(false);
+  // Gates the mic on the LLM pre-warm (Postgres pool + persona cache), not
+  // just the Deepgram connection — without this, the first real turn was
+  // the one absorbing a Neon cold-start of several seconds. Mirrored into a
+  // ref for the same reason stateRef mirrors state: ws.onopen is a callback
+  // registered once and would otherwise close over a stale `false`.
+  const [warmupReady, setWarmupReady] = useState(false);
+  const warmupReadyRef = useRef(false);
+  // True once the Deepgram WS is open AND mic permission/stream are ready —
+  // independent of warmupReadyRef, so whichever of the two finishes last is
+  // the one that actually arms the mic (see maybeArmMic).
+  const micGateRef = useRef(false);
   const greetingAudioRef = useRef<string | null>(null);
   const greetingPlayedRef = useRef(false);
 
@@ -542,6 +553,27 @@ export default function CallPage() {
     }
   }
 
+  // Arms the mic (starts forwarding audio to Deepgram) only once BOTH the
+  // WS/mic-permission side and the LLM warmup side are ready — whichever
+  // finishes last calls this and actually flips sendAudioRef. No-ops if
+  // called before both are ready, or if already armed.
+  function maybeArmMic() {
+    if (!micGateRef.current || !warmupReadyRef.current) return;
+    if (sendAudioRef.current) return;
+    sendAudioRef.current = true;
+    if (stateRef.current === "idle") setConvState("listening");
+    // Auto-play the greeting once both the mic/WS are ready and the
+    // greeting TTS fetch (fired on persona load) has settled.
+    if (warmupDone) tryPlayGreeting();
+  }
+
+  function markWarmupReady() {
+    if (warmupReadyRef.current) return;
+    warmupReadyRef.current = true;
+    setWarmupReady(true);
+    maybeArmMic();
+  }
+
   async function connectDeepgram() {
     try {
       const tokenRes = await fetch("/api/deepgram-token");
@@ -628,15 +660,14 @@ export default function CallPage() {
         if (!callStartTimeRef.current) callStartTimeRef.current = new Date();
         setMicError(null);
         setConnecting(false);
-        // Always-on: arm the mic the instant the socket is ready, no click
-        // required. ensureMicReady() triggers the getUserMedia permission
-        // prompt itself if this is the first connection.
+        // Always-on: mic permission requested the instant the socket is
+        // ready, no click required. ensureMicReady() triggers the
+        // getUserMedia permission prompt itself if this is the first
+        // connection. Actually arming the mic (sendAudioRef) waits on
+        // maybeArmMic — it also needs the LLM warmup to have finished.
         ensureMicReady().then(() => {
-          sendAudioRef.current = true;
-          if (stateRef.current === "idle") setConvState("listening");
-          // Auto-play the greeting once both the mic/WS are ready and the
-          // greeting TTS fetch (fired on persona load) has settled.
-          if (warmupDone) tryPlayGreeting();
+          micGateRef.current = true;
+          maybeArmMic();
         });
       };
       ws.onerror = () => setMicError("Speech recognition connection error");
@@ -768,16 +799,28 @@ export default function CallPage() {
 
   // LLM pre-warm: exercises the Postgres pool (persona ownership lookup in
   // /api/chat) without spending a DeepSeek call — see the message ===
-  // "__warmup__" guard in app/api/chat/route.ts. Fire-and-forget, same
-  // pattern as the Cartesia warmup above.
+  // "__warmup__" guard in app/api/chat/route.ts. Unlike the Cartesia warmup
+  // above, this one gates the mic (via markWarmupReady → maybeArmMic) —
+  // without it, the first real turn was the one absorbing a multi-second
+  // Neon cold-start instead of this throwaway ping. 8s timeout so a slow or
+  // failed warmup can't block the call from ever starting.
   useEffect(() => {
     if (!personaId) return;
+    const warmupTimeout = setTimeout(() => markWarmupReady(), 8000);
     fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
       body: JSON.stringify({ personaId, message: '__warmup__', history: [], emotionHistory: [] }),
-    }).catch(() => {});
+    })
+      .then(() => {
+        clearTimeout(warmupTimeout);
+        markWarmupReady();
+      })
+      .catch(() => {
+        clearTimeout(warmupTimeout);
+        markWarmupReady();
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -890,8 +933,11 @@ export default function CallPage() {
       />
 
       {/* Connecting overlay — disappears automatically once the Deepgram WS
-          opens (see ws.onopen), no tap required. */}
-      {connecting && (
+          is open AND the LLM warmup has finished (see maybeArmMic), no tap
+          required. Same visual for both reasons — a few extra seconds of
+          "Connecting..." reads fine; a first turn silently eating a Neon
+          cold-start doesn't. */}
+      {(connecting || !warmupReady) && (
         <div className="absolute inset-0 bg-void flex flex-col items-center justify-center gap-6 z-10">
           <div className="w-40 h-40 rounded-full bg-elevated animate-pulse" />
           <div className="text-center">
