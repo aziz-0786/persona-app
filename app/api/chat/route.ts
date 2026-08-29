@@ -496,17 +496,20 @@ async function callLLM(
 }
 
 export async function POST(req: NextRequest) {
-  console.log(`[CHAT] request received at ${Date.now()}`);
+  const t0 = Date.now();
+  console.log(`[CHAT] request received at ${t0}`);
   const session = await auth();
   if (!session?.user) {
     return new Response("Unauthorized", { status: 401 });
   }
+  console.log(`[TIMING] auth: ${Date.now() - t0}ms`);
 
   const { personaId, message, history = [], emotionHistory } = await req.json();
 
   if (!personaId || !message) {
     return new Response("Missing personaId or message", { status: 400 });
   }
+  console.log(`[TIMING] body parsed: ${Date.now() - t0}ms`);
 
   // Warmup ping — exercises auth + the persona ownership lookup (warms the
   // Postgres/Neon connection pool, the actual serverless cold-start cost)
@@ -544,6 +547,7 @@ export async function POST(req: NextRequest) {
   if (!persona) {
     return new Response("Persona not found", { status: 404 });
   }
+  console.log(`[TIMING] persona lookup: ${Date.now() - t0}ms`);
 
   // Point A — persist the user's message before streaming starts. Not
   // awaited: a DB hiccup here must never delay or block the response.
@@ -582,6 +586,7 @@ export async function POST(req: NextRequest) {
       }
     ),
   ]);
+  console.log(`[TIMING] parallel user+RAG: ${Date.now() - t0}ms`);
 
   const systemPrompt = buildSystemPrompt(
     persona,
@@ -589,6 +594,7 @@ export async function POST(req: NextRequest) {
     user ?? { displayName: null, profileBio: null },
     safeEmotionHistory
   );
+  console.log(`[TIMING] system prompt built: ${Date.now() - t0}ms`);
 
   // Messages array: Zones 0-3 up front, last 6 turns of history, then the new
   // user message, then Zone 4 as its own trailing system message — fired
@@ -612,6 +618,7 @@ export async function POST(req: NextRequest) {
   }
 
   console.log(`[CHAT] system prompt chars: ${systemPrompt.length}`);
+  console.log(`[TIMING] LLM call started: ${Date.now() - t0}ms`);
   const llmStart = Date.now();
   const result = await callLLM(messages);
 
