@@ -766,6 +766,21 @@ export default function CallPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persona]);
 
+  // LLM pre-warm: exercises the Postgres pool (persona ownership lookup in
+  // /api/chat) without spending a DeepSeek call — see the message ===
+  // "__warmup__" guard in app/api/chat/route.ts. Fire-and-forget, same
+  // pattern as the Cartesia warmup above.
+  useEffect(() => {
+    if (!personaId) return;
+    fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ personaId, message: '__warmup__', history: [], emotionHistory: [] }),
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     // Guards against React Strict Mode's dev-only double-invoke (mount →
     // cleanup → mount) — without it, this ran connectDeepgram() (and its
