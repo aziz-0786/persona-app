@@ -199,6 +199,29 @@ export async function upsertMemory(personaId: string, facts: string[]): Promise<
   }
 }
 
+// For the /api/debug/memory-status route — namespace = personaId in this
+// index (see upsertMemory/queryMemories above), so this is directly "which
+// personas have memories, and how many." Returns an empty result rather
+// than throwing if the index doesn't exist yet (no persona has ever
+// committed a memory), same degrade-gracefully convention as queryMemories.
+export async function getMemoryIndexStats(): Promise<{
+  totalVectorCount: number;
+  namespaces: Record<string, { vectorCount: number }>;
+}> {
+  const pc = getClient();
+  if (!(await indexExists(pc, MEMORIES_INDEX_NAME))) {
+    return { totalVectorCount: 0, namespaces: {} };
+  }
+
+  const stats = await pc.index(MEMORIES_INDEX_NAME).describeIndexStats();
+  const namespaces: Record<string, { vectorCount: number }> = {};
+  for (const [ns, summary] of Object.entries(stats.namespaces ?? {})) {
+    namespaces[ns] = { vectorCount: summary.recordCount ?? 0 };
+  }
+
+  return { totalVectorCount: stats.totalRecordCount ?? 0, namespaces };
+}
+
 export async function deleteKnowledgeNamespace(personaId: string): Promise<void> {
   const pc = getClient();
   const { indexes } = await pc.listIndexes();
