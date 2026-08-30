@@ -183,7 +183,6 @@ export async function POST(req: NextRequest) {
 
   console.log("[TTS] route hit, body keys:", Object.keys(body));
   console.log("[TTS] text length:", text?.length ?? 0);
-  console.log("[TTS] RUNPOD_OFFLINE:", process.env.RUNPOD_OFFLINE);
 
   if (!personaId || !text) {
     return NextResponse.json({ error: "Missing personaId or text" }, { status: 400 });
@@ -319,11 +318,6 @@ export async function POST(req: NextRequest) {
   // Offline/stub short-circuit removed — TTS always calls RunPod now,
   // regardless of RUNPOD_OFFLINE or missing credentials.
   const useStub = false;
-  console.log("[TTS] useStub:", useStub, {
-    hasApiKey: !!process.env.RUNPOD_API_KEY,
-    hasEndpointId: !!process.env.RUNPOD_TTS_ENDPOINT_ID,
-    offlineFlag: process.env.RUNPOD_OFFLINE,
-  });
 
   console.log("[TTS] personaId:", personaId);
   console.log("[TTS] sending to RunPod, text:", text?.slice(0, 50));

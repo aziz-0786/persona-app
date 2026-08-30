@@ -546,7 +546,16 @@ export async function POST(req: NextRequest) {
   // real session and a real personaId the caller owns, same as a normal
   // request.
   if (message === "__warmup__") {
-    const warmupPersona = await getPersonaWithCache(personaId, session.user.id);
+    // Pinecone's client establishes its connection lazily on first query —
+    // that connection setup (not the query itself) is the ~3s cost, so
+    // warming it here in parallel with the persona lookup keeps it off the
+    // first real turn.
+    const [warmupPersona] = await Promise.all([
+      getPersonaWithCache(personaId, session.user.id),
+      process.env.PINECONE_API_KEY
+        ? queryMemories(personaId, "warmup", 1).catch(() => {})
+        : Promise.resolve(),
+    ]);
     if (!warmupPersona) {
       return new Response("Persona not found", { status: 404 });
     }

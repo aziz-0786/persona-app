@@ -806,7 +806,7 @@ export default function CallPage() {
   // failed warmup can't block the call from ever starting.
   useEffect(() => {
     if (!personaId) return;
-    const warmupTimeout = setTimeout(() => markWarmupReady(), 8000);
+    const warmupTimeout = setTimeout(() => markWarmupReady(), 15000);
     fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
