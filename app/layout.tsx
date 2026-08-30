@@ -7,7 +7,6 @@ import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { WarmupManagerProvider } from "@/components/WarmupManagerProvider";
 
 export const metadata: Metadata = {
   title: "Lyra.ai — Talk to your digital twin",
@@ -47,9 +46,7 @@ export default async function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="bg-void text-text-primary antialiased min-h-screen">
-        <SessionProvider session={session}>
-          <WarmupManagerProvider>{children}</WarmupManagerProvider>
-        </SessionProvider>
+        <SessionProvider session={session}>{children}</SessionProvider>
       </body>
     </html>
   );

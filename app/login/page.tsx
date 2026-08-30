@@ -16,18 +16,6 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
 
-    // Fire-and-forget — starts warming the RunPod TTS worker the instant the
-    // user commits to signing in, in parallel with Auth.js doing its thing,
-    // not gated on it. sendBeacon survives the page navigation that follows
-    // a successful sign-in; a normal un-awaited fetch would risk being
-    // cancelled by the browser mid-flight during that navigation.
-    if (typeof navigator.sendBeacon === "function") {
-      navigator.sendBeacon("/api/warmup-runpod");
-    } else {
-      fetch("/api/warmup-runpod", { method: "POST" }).catch(() => {});
-    }
-    console.log("[Warmup] Login detected — initial ping fired");
-
     const result = await signIn("credentials", {
       email: email.trim(),
       redirect: false,
