@@ -674,7 +674,8 @@ export default function CallPage() {
       ws.onerror = () => setMicError("Speech recognition connection error");
       wsRef.current = ws;
 
-      ws.onclose = () => {
+      ws.onclose = (event: CloseEvent) => {
+        console.log("[CALL] WS closed — code:", event.code, "reason:", event.reason || "(none)", "wasClean:", event.wasClean);
         turnIdRef.current++;
         console.log("[CALL] WS reconnect, turnId advanced to", turnIdRef.current);
         if (keepAliveIntervalRef.current) {
@@ -803,11 +804,12 @@ export default function CallPage() {
   // "__warmup__" guard in app/api/chat/route.ts. Unlike the Cartesia warmup
   // above, this one gates the mic (via markWarmupReady → maybeArmMic) —
   // without it, the first real turn was the one absorbing a multi-second
-  // Neon cold-start instead of this throwaway ping. 8s timeout so a slow or
+  // Neon cold-start instead of this throwaway ping. 18s timeout (dev warmup
+  // has been observed taking 12-13s under a cold Neon pool) so a slow or
   // failed warmup can't block the call from ever starting.
   useEffect(() => {
     if (!personaId) return;
-    const warmupTimeout = setTimeout(() => markWarmupReady(), 15000);
+    const warmupTimeout = setTimeout(() => markWarmupReady(), 18000);
     fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
