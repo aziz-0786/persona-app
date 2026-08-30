@@ -14,6 +14,10 @@ import { detectAutoPin } from "@/lib/auto-pin";
 // a user can only ever read their own persona's cached result. 5min TTL —
 // if a persona is deleted, worst case is 5 more minutes of stale access,
 // acceptable for a voice app.
+// NOTE: This module-level cache is wiped on any Next.js route recompilation
+// (HMR in dev). In production (next start), this does not occur since routes
+// are not recompiled during runtime. If Railway ever shows mid-conversation
+// cache misses, suspect a deployment/restart event during an active call.
 const personaCache = new Map<string, { value: typeof personas.$inferSelect | null; expiresAt: number }>();
 const PERSONA_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -553,7 +557,7 @@ export async function POST(req: NextRequest) {
     const [warmupPersona] = await Promise.all([
       getPersonaWithCache(personaId, session.user.id),
       process.env.PINECONE_API_KEY
-        ? queryMemories(personaId, "warmup", 1).catch(() => {})
+        ? queryMemories(personaId, "warmup", 3).catch(() => {})
         : Promise.resolve(),
     ]);
     if (!warmupPersona) {

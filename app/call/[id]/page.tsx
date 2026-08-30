@@ -152,6 +152,7 @@ export default function CallPage() {
   // last submission.
   const accumulatedTranscriptRef = useRef<string>("");
   const cleanupRef = useRef<(() => void) | null>(null);
+  const commitFiredRef = useRef(false);
   const didInitRef = useRef(false);
   const deepgramCancelledRef = useRef(false);
   const micInitPromiseRef = useRef<Promise<void> | null>(null);
@@ -873,6 +874,16 @@ export default function CallPage() {
   }
 
   async function endCall() {
+    // Guards the memory-commit + call-sessions POST below from firing twice
+    // per call — production logs showed a duplicate /api/call-sessions POST.
+    // This is the only call site wired to endCall (no useEffect cleanup or
+    // beforeunload handler also calls it), so the double-fire is most likely
+    // two rapid invocations of this handler itself (e.g. a double tap on the
+    // hangup button before router.push unmounts the page) rather than a
+    // React StrictMode double-effect artifact. Guarding here either way.
+    if (commitFiredRef.current) return;
+    commitFiredRef.current = true;
+
     // Fire memory commit — fire-and-forget, never blocks navigation. Was
     // previously `await`ed with a bare `catch {}`, which (a) stalled hangup
     // for as long as the DeepSeek/Groq extraction call took, and (b)
