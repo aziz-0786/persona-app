@@ -14,8 +14,10 @@ import { detectAutoPin } from "@/lib/auto-pin";
 // a user can only ever read their own persona's cached result. 5min TTL —
 // if a persona is deleted, worst case is 5 more minutes of stale access,
 // acceptable for a voice app.
-// In dev, use global to survive HMR / Fast Refresh. global persists across
-// module recompiles.
+// NOTE: This module-level cache is wiped on any Next.js route recompilation
+// (HMR in dev). In production (next start), this does not occur since routes
+// are not recompiled during runtime. If Railway ever shows mid-conversation
+// cache misses, suspect a deployment/restart event during an active call.
 declare global {
   var __personaCache: Map<string, { value: typeof personas.$inferSelect | null; expiresAt: number }> | undefined;
 }

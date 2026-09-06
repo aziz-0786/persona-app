@@ -804,14 +804,14 @@ export default function CallPage() {
   // "__warmup__" guard in app/api/chat/route.ts. Unlike the Cartesia warmup
   // above, this one gates the mic (via markWarmupReady → maybeArmMic) —
   // without it, the first real turn was the one absorbing a multi-second
-  // Neon cold-start instead of this throwaway ping. 35s timeout — Neon free
-  // tier cold starts can take up to ~25s; this gives a buffer so the mic
-  // doesn't arm (and the welcome message doesn't send) while the warmup DB
-  // call is still in flight, which would otherwise make the user's first
-  // real turn compete with the still-connecting pool.
+  // Neon cold-start instead of this throwaway ping. 22s timeout — Neon free
+  // tier cold start observed at ~17s; this gives a 5s buffer so the mic
+  // doesn't arm (and the user doesn't speak) while the warmup DB call is
+  // still in flight, which would otherwise make the user's first real turn
+  // compete with the still-connecting pool.
   useEffect(() => {
     if (!personaId) return;
-    const warmupTimeout = setTimeout(() => markWarmupReady(), 35000); // was 15000, then 18000, then 22000
+    const warmupTimeout = setTimeout(() => markWarmupReady(), 22000); // was 15000, then 18000
     fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
