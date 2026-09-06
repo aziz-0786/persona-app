@@ -153,6 +153,13 @@ export default function CallPage() {
   const accumulatedTranscriptRef = useRef<string>("");
   const cleanupRef = useRef<(() => void) | null>(null);
   const commitFiredRef = useRef(false);
+  // Set when a WS close arrives while the persona is mid-speech — reconnecting
+  // immediately would open a fresh Deepgram socket while TTS audio is still
+  // playing, capture the persona's own voice through the mic, and trigger a
+  // false barge-in that cuts the response short. Consumed (and reconnect
+  // actually fired) once TTS genuinely finishes — see the two queue.onended
+  // sites in submitTurn and tryPlayGreeting.
+  const reconnectPendingRef = useRef(false);
   const didInitRef = useRef(false);
   const deepgramCancelledRef = useRef(false);
   const micInitPromiseRef = useRef<Promise<void> | null>(null);
@@ -441,6 +448,12 @@ export default function CallPage() {
             // Always-on: go straight back to "listening", not "idle" — the
             // mic never stopped forwarding, so there's nothing to re-arm.
             setConvState("listening");
+            // Fire a reconnect that a WS close deferred while this turn's
+            // audio was still playing — see ws.onclose.
+            if (reconnectPendingRef.current && !deepgramCancelledRef.current) {
+              reconnectPendingRef.current = false;
+              connectDeepgram();
+            }
           });
         }
         queue.add(buffer);
@@ -694,8 +707,18 @@ export default function CallPage() {
         // calls wsRef.current?.close()) regardless of which path triggered
         // it, so it correctly suppresses reconnect on every intentional
         // teardown, not just the hangup button.
+        //
+        // Deferred while "speaking": reconnecting immediately opened a fresh
+        // socket while TTS audio was still playing, which picked up the
+        // persona's own voice through the mic and fired a false barge-in
+        // (SpeechStarted) that cut the response short. Held in
+        // reconnectPendingRef and fired once TTS actually finishes instead.
         if (!deepgramCancelledRef.current) {
-          connectDeepgram();
+          if (stateRef.current === "speaking") {
+            reconnectPendingRef.current = true;
+          } else {
+            connectDeepgram();
+          }
         }
       };
 
@@ -768,6 +791,12 @@ export default function CallPage() {
       const queue = getAudioQueue();
       queue.onended(() => {
         setConvState("listening");
+        // Fire a reconnect that a WS close deferred while the greeting's
+        // audio was still playing — see ws.onclose.
+        if (reconnectPendingRef.current && !deepgramCancelledRef.current) {
+          reconnectPendingRef.current = false;
+          connectDeepgram();
+        }
       });
       queue.add(buf);
     } catch (e) {
