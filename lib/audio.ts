@@ -160,6 +160,7 @@ export function createAudioQueue(ctx: AudioContext): AudioQueue {
     const buffer = queue.shift();
     if (!buffer) {
       currentSource = null;
+      console.log("[AUDIO QUEUE] drained");
       endedCb?.();
       return;
     }

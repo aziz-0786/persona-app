@@ -315,6 +315,7 @@ export default function CallPage() {
   // SpeechStarted then is left alone (the in-flight LLM call is NOT
   // aborted); a SpeechStarted while idle/listening is just normal speech.
   function handleBargein() {
+    console.log("[BARGE-IN] triggered, state:", stateRef.current, "reconnectPending:", reconnectPendingRef.current);
     if (stateRef.current !== "speaking") return;
     // Ignore SpeechStarted events in the first 600ms of TTS playback — a
     // burst of background noise (fan, ambient sound) right as audio starts
@@ -389,6 +390,18 @@ export default function CallPage() {
     // turn (observed as two consecutive "onComplete fired" logs) — without
     // this, the listening transition below could run twice for one turn.
     let completeFired = false;
+    // AudioQueue.onended fires whenever its internal buffer array is
+    // momentarily empty — it has no idea whether more clauses are still
+    // being fetched. Clauses are queued via the ttsChain promise chain as
+    // each one's /api/tts fetch resolves, so if clause N finishes playing
+    // before clause N+1's fetch has resolved and been queue.add()-ed, the
+    // queue drains early and onended fires mid-turn — reopening the
+    // Deepgram WS (via reconnectPendingRef) while more TTS is still about
+    // to play. Set true only once ttsChain itself has resolved (every
+    // clause for this turn has been fetched and queued); onended ignores
+    // any firing before that, and since the same callback stays registered,
+    // it fires again for real once the queue actually finishes for good.
+    let allClausesFlushed = false;
 
     function flushClause(clauseText: string) {
       const clause = clauseText.trim();
@@ -446,6 +459,13 @@ export default function CallPage() {
           setConvState("speaking");
           queue.onended(() => {
             if (completeFired) return;
+            if (!allClausesFlushed) {
+              // Premature drain — more clauses are still being fetched.
+              // Don't finalize; playback resumes on the next queue.add()
+              // and this same callback fires again once truly done.
+              console.log("[AUDIO QUEUE] drained early — more clauses pending, ignoring");
+              return;
+            }
             completeFired = true;
             if (turnIdRef.current !== myTurnId) {
               console.log("[CALL] turn", myTurnId, "superseded, skipping listening reset");
@@ -552,6 +572,10 @@ export default function CallPage() {
       // only if audio never actually started (e.g. TTS failed, or no voice
       // ref).
       ttsChain.then(() => {
+        // Every clause for this turn has now been fetched and queued —
+        // from here on, a genuine queue-empty event means playback is
+        // actually done, not just waiting on the next clause's fetch.
+        allClausesFlushed = true;
         if (turnIdRef.current === myTurnId && !firstAudioSeen) {
           fillerPlayingRef.current = false;
           stopFiller();
@@ -595,6 +619,7 @@ export default function CallPage() {
   }
 
   async function connectDeepgram() {
+    console.log("[WS RECONNECT] connectDeepgram called, state:", stateRef.current);
     try {
       const tokenRes = await fetch("/api/deepgram-token");
       const tokenData = await tokenRes.json();
