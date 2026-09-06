@@ -18,7 +18,11 @@ import { detectAutoPin } from "@/lib/auto-pin";
 // (HMR in dev). In production (next start), this does not occur since routes
 // are not recompiled during runtime. If Railway ever shows mid-conversation
 // cache misses, suspect a deployment/restart event during an active call.
-const personaCache = new Map<string, { value: typeof personas.$inferSelect | null; expiresAt: number }>();
+declare global {
+  var __personaCache: Map<string, { value: typeof personas.$inferSelect | null; expiresAt: number }> | undefined;
+}
+const personaCache = global.__personaCache ??
+  (global.__personaCache = new Map<string, { value: typeof personas.$inferSelect | null; expiresAt: number }>());
 const PERSONA_CACHE_TTL_MS = 5 * 60 * 1000;
 
 async function getPersonaWithCache(personaId: string, userId: string) {
