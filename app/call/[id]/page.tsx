@@ -315,8 +315,20 @@ export default function CallPage() {
   // SpeechStarted then is left alone (the in-flight LLM call is NOT
   // aborted); a SpeechStarted while idle/listening is just normal speech.
   function handleBargein() {
-    console.log("[BARGE-IN] triggered, state:", stateRef.current, "reconnectPending:", reconnectPendingRef.current);
+    console.log("[BARGE-IN] triggered, state:", stateRef.current, "reconnectPending:", reconnectPendingRef.current, "sendAudio:", sendAudioRef.current);
     if (stateRef.current !== "speaking") return;
+    // sendAudioRef is muted for the entire "speaking" window (see where
+    // it's set false just before setConvState("speaking")), so no new mic
+    // audio can have reached Deepgram to produce a genuine SpeechStarted
+    // here — this can only be a stale event from audio already in flight
+    // to Deepgram right as muting took effect. Acting on it was aborting
+    // the turn (turnIdRef++, discarding every clause not yet queued) and
+    // killing whatever was playing mid-sample — the actual cause of both
+    // "stops at the first comma" and mid-word cutoffs.
+    if (!sendAudioRef.current) {
+      console.log("[BARGE-IN] ignored — mic muted for speaking, this is a stale in-flight event");
+      return;
+    }
     // Ignore SpeechStarted events in the first 600ms of TTS playback — a
     // burst of background noise (fan, ambient sound) right as audio starts
     // is far more likely than a genuine interruption that fast; a real
