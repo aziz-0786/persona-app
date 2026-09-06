@@ -27,7 +27,11 @@ function getDb(): DrizzleDB {
   if (!_db) {
     const url = process.env.DATABASE_URL;
     if (!url) throw new Error("DATABASE_URL environment variable is not set");
-    const pool = new Pool({ connectionString: url });
+    const pool = new Pool({
+      connectionString: url,
+      idleTimeoutMillis: 30_000, // hold connections 30s instead of default 10s
+      connectionTimeoutMillis: 25_000, // wait up to 25s for Neon to wake from pause
+    });
     _db = drizzle(pool, { schema });
   }
   return _db;
