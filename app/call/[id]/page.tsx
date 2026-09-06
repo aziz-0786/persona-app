@@ -331,6 +331,10 @@ export default function CallPage() {
     ttsAbortRef.current?.abort();
     audioQueueRef.current?.stop();
     stopFiller();
+    // Re-arm in case this SpeechStarted was already in flight from Deepgram
+    // right as sendAudioRef got muted for "speaking" — without this, a
+    // narrow race here could leave the mic muted after a genuine barge-in.
+    sendAudioRef.current = true;
     setConvState("listening");
     accumulatedTranscriptRef.current = "";
     turnIdRef.current++; // invalidate in-flight turn
@@ -410,8 +414,10 @@ export default function CallPage() {
       // duration audio, and a trailing one can lose the queue-population
       // race against the previous clause's playback finishing, firing
       // onended (and the deferred WS reconnect) before this fragment is
-      // even queued.
-      if (!clause || clause.length < 4 || voiceMissing) return;
+      // even queued. Checked by content, not raw length — a length cutoff
+      // (e.g. < 4) also drops genuine short replies like "No" or "Ok",
+      // which is a real bug, not just an edge case.
+      if (!clause || !/[a-zA-Z0-9]/.test(clause) || voiceMissing) return;
       // flushClause is invoked via clauses.forEach(flushClause), not a real
       // loop — `return` here (skipping just this clause's TTS fetch) is the
       // equivalent of "break" in that context.
@@ -456,6 +462,14 @@ export default function CallPage() {
           fillerPlayingRef.current = false;
           stopFiller();
           ttsStartedAtRef.current = Date.now();
+          // Stop forwarding mic audio to Deepgram while the persona is
+          // speaking — echoCancellation alone wasn't enough to keep the
+          // persona's own TTS output (picked up by the mic, especially
+          // without headphones) from being misread as the user talking,
+          // producing a false SpeechStarted -> barge-in on every turn. This
+          // does mean a real interruption can't be detected until the
+          // response finishes and sendAudioRef is re-armed below.
+          sendAudioRef.current = false;
           setConvState("speaking");
           queue.onended(() => {
             if (completeFired) return;
@@ -471,8 +485,9 @@ export default function CallPage() {
               console.log("[CALL] turn", myTurnId, "superseded, skipping listening reset");
               return;
             }
-            // Always-on: go straight back to "listening", not "idle" — the
-            // mic never stopped forwarding, so there's nothing to re-arm.
+            // Re-arm mic forwarding now that the persona is done speaking —
+            // see where it's disarmed above, just before setConvState("speaking").
+            sendAudioRef.current = true;
             setConvState("listening");
             // Fire a reconnect that a WS close deferred while this turn's
             // audio was still playing — see ws.onclose.
@@ -579,6 +594,7 @@ export default function CallPage() {
         if (turnIdRef.current === myTurnId && !firstAudioSeen) {
           fillerPlayingRef.current = false;
           stopFiller();
+          sendAudioRef.current = true;
           setConvState("listening");
           if (anyClauseAttempted) {
             console.error("[TTS] all clauses failed for turn, no audio queued");
@@ -592,6 +608,7 @@ export default function CallPage() {
       if (turnIdRef.current === myTurnId) {
         fillerPlayingRef.current = false;
         stopFiller();
+        sendAudioRef.current = true;
         setConvState("listening");
       }
     }
@@ -818,9 +835,13 @@ export default function CallPage() {
       await ctx.resume(); // safe to call again, idempotent
       const buf = await decodeB64ToAudioBuffer(greetingAudioRef.current, ctx);
       ttsStartedAtRef.current = Date.now();
+      // See the same mute in submitTurn — stops the greeting's own audio
+      // from being picked up by the mic and misread as the user talking.
+      sendAudioRef.current = false;
       setConvState("speaking");
       const queue = getAudioQueue();
       queue.onended(() => {
+        sendAudioRef.current = true;
         setConvState("listening");
         // Fire a reconnect that a WS close deferred while the greeting's
         // audio was still playing — see ws.onclose.
@@ -833,6 +854,11 @@ export default function CallPage() {
     } catch (e) {
       console.warn("[WARMUP] greeting play failed:", e);
       // Silent failure — user is already in the call UI, just no greeting.
+      // Re-arm defensively in case this failed after the mute above but
+      // before queue.add() — otherwise the mic would stay muted forever
+      // with no onended left to fire and undo it.
+      sendAudioRef.current = true;
+      setConvState("listening");
     }
   }
 
