@@ -392,7 +392,13 @@ export default function CallPage() {
 
     function flushClause(clauseText: string) {
       const clause = clauseText.trim();
-      if (!clause || voiceMissing) return;
+      // Drops punctuation-only fragments (e.g. a bare "." left over after
+      // extractClauses splits a sentence) — these synthesize to near-zero-
+      // duration audio, and a trailing one can lose the queue-population
+      // race against the previous clause's playback finishing, firing
+      // onended (and the deferred WS reconnect) before this fragment is
+      // even queued.
+      if (!clause || clause.length < 4 || voiceMissing) return;
       // flushClause is invoked via clauses.forEach(flushClause), not a real
       // loop — `return` here (skipping just this clause's TTS fetch) is the
       // equivalent of "break" in that context.
