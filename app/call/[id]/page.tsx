@@ -682,6 +682,21 @@ export default function CallPage() {
           clearInterval(keepAliveIntervalRef.current);
           keepAliveIntervalRef.current = null;
         }
+        // Deepgram closes idle/expired connections on its own — previously
+        // nothing reopened the socket, so wsRef.current kept pointing at a
+        // CLOSED WebSocket forever and every mic chunk after that was
+        // silently dropped (line 719's readyState check never passed again).
+        // Guarded on deepgramCancelledRef, not commitFiredRef — that flag
+        // only gets set inside endCall(), so it would miss the "component
+        // unmounted some other way" teardown path (browser back, tab close)
+        // where cleanup() still runs and still closes this socket.
+        // deepgramCancelledRef is set by that same cleanup() (before it
+        // calls wsRef.current?.close()) regardless of which path triggered
+        // it, so it correctly suppresses reconnect on every intentional
+        // teardown, not just the hangup button.
+        if (!deepgramCancelledRef.current) {
+          connectDeepgram();
+        }
       };
 
       // Guards against a leaked interval on reconnect — without clearing the
