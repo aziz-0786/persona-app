@@ -18,5 +18,11 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  // mobile/ is a separate Expo/React Native project with its own tsconfig,
+  // dependencies, and global types (e.g. React Native's own FormData
+  // polyfill typings) — including it here merges those globals into this
+  // program and broke unrelated web routes (app/api/upload/route.ts's use
+  // of the DOM FormData.get()). Typecheck it independently: `npx tsc
+  // --noEmit` inside /mobile.
+  "exclude": ["node_modules", "mobile"]
 }
