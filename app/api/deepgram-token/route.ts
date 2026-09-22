@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { callStartLimiter } from "@/lib/ratelimit";
+import { getBalance } from "@/lib/credits";
 
 export const runtime = "nodejs";
 
@@ -7,6 +9,24 @@ export async function GET() {
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Second line of defense — /api/calls/start also checks this, but a
+  // zero-balance user should never even get a working Deepgram token.
+  const balance = await getBalance(session.user.id);
+  if (balance === 0) {
+    return NextResponse.json(
+      { error: "No credits", redirectTo: "/dashboard/credits" },
+      { status: 402 }
+    );
+  }
+
+  const { success } = await callStartLimiter.limit(session.user.id!);
+  if (!success) {
+    return NextResponse.json(
+      { error: "Too many requests. Wait before starting another call." },
+      { status: 429, headers: { "Retry-After": "30" } }
+    );
   }
 
   const apiKey = process.env.DEEPGRAM_API_KEY;
@@ -44,7 +64,6 @@ export async function GET() {
   }
 
   const data = await res.json();
-  console.log("[DEEPGRAM TOKEN] full response:", JSON.stringify(data));
   if (!data.key) {
     console.error("[DEEPGRAM TOKEN] response missing key:", data);
     return NextResponse.json({ error: "Malformed token response" }, { status: 502 });

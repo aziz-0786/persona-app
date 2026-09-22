@@ -76,6 +76,9 @@ export default function CallPage() {
   const [micError, setMicError] = useState<string | null>(null);
   const [interimText, setInterimText] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  // Credits balance as of the last /api/calls/start or /api/calls/end
+  // response — not polled live during the call, just the two snapshots.
+  const [credits, setCredits] = useState<number | null>(null);
   // Reactive mirror of historyRef — historyRef itself is a plain ref (used
   // for reading the latest value synchronously inside submitTurn/endCall
   // without a stale closure), so mutating it alone never triggers a
@@ -170,6 +173,13 @@ export default function CallPage() {
   // in flight. Guarded so a later reconnect never resets it — call_
   // sessions.startedAt must reflect the original call start, not a reconnect.
   const callStartTimeRef = useRef<Date | null>(null);
+  // Billing (calls table) counterpart to callStartTimeRef above — kept as a
+  // separate ref/name since callStartTimeRef already exists for the
+  // call_sessions transcript record and tracks a Date, not a Date.now()
+  // timestamp. Set once, when /api/calls/start succeeds; not reset on
+  // Deepgram reconnects.
+  const callIdRef = useRef<string | null>(null);
+  const billingStartTimeRef = useRef<number>(0);
 
   // Dedicated filler playback — deliberately NOT the shared getAudioQueue()
   // instance, so a filler clip can be hard-stopped the instant real TTS
@@ -662,6 +672,32 @@ export default function CallPage() {
         return;
       }
 
+      // Open the billing record for this call — guarded so a Deepgram
+      // reconnect (connectDeepgram() is also called from ws.onclose) never
+      // opens a second one for the same call.
+      if (!callIdRef.current) {
+        try {
+          const startRes = await fetch("/api/calls/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ personaId, platform: "web" }),
+          });
+          if (startRes.status === 402) {
+            const { redirectTo } = await startRes.json();
+            router.push(redirectTo);
+            return;
+          }
+          if (startRes.ok) {
+            const startData = await startRes.json();
+            callIdRef.current = startData.callId;
+            billingStartTimeRef.current = Date.now();
+            setCredits(startData.balance);
+          }
+        } catch (err) {
+          console.error("[CALL] failed to start billed call:", err);
+        }
+      }
+
       // Browsers can't set a custom Authorization header on a WebSocket
       // handshake — the Sec-WebSocket-Protocol subprotocol array is the way
       // around that. This only works because /api/deepgram-token now mints a
@@ -1039,6 +1075,28 @@ export default function CallPage() {
       }).catch((err) => console.error("[CALL SESSION]", err));
     }
 
+    // Close the billing record opened in connectDeepgram(). Awaited (unlike
+    // the fire-and-forget calls above) so the final balance is known before
+    // navigating away — but wrapped so a failure here still lets the user
+    // leave the call.
+    if (callIdRef.current) {
+      const durationSeconds = Math.floor((Date.now() - billingStartTimeRef.current) / 1000);
+      try {
+        const endRes = await fetch("/api/calls/end", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ callId: callIdRef.current, durationSeconds }),
+        });
+        if (endRes.ok) {
+          const endData = await endRes.json();
+          if (typeof endData.remainingBalance === "number") setCredits(endData.remainingBalance);
+        }
+      } catch (err) {
+        console.error("[CALL] failed to end billed call:", err);
+      }
+      callIdRef.current = null;
+    }
+
     router.push("/");
   }
 
@@ -1087,6 +1145,38 @@ export default function CallPage() {
           fontSize: '14px', zIndex: 50
         }}>
           {micError}
+        </div>
+      )}
+
+      {credits !== null && (
+        <div style={{
+          position: 'fixed', top: '16px', right: '16px',
+          color: 'rgba(255,255,255,0.7)',
+          fontSize: '12px', zIndex: 50
+        }}>
+          {credits.toLocaleString()} credits
+        </div>
+      )}
+
+      {credits === 0 ? (
+        <div style={{
+          position: 'fixed', top: '48px', left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#7f1d1d', color: '#fca5a5',
+          padding: '8px 16px', borderRadius: '8px',
+          fontSize: '14px', zIndex: 50, textAlign: 'center'
+        }}>
+          Out of credits — call will end soon.
+        </div>
+      ) : credits !== null && credits <= 30 && (
+        <div style={{
+          position: 'fixed', top: '48px', left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#78350f', color: '#fcd34d',
+          padding: '8px 16px', borderRadius: '8px',
+          fontSize: '14px', zIndex: 50, textAlign: 'center'
+        }}>
+          Low credits: {credits} remaining. Top up to avoid interruption.
         </div>
       )}
     </div>

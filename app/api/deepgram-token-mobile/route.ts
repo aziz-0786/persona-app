@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { callStartLimiter } from "@/lib/ratelimit";
+import { getBalance } from "@/lib/credits";
 
 export const dynamic = 'force-dynamic';
 export const runtime = "nodejs";
@@ -18,6 +20,24 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Second line of defense — /api/calls/start also checks this, but a
+  // zero-balance user should never even get a working Deepgram token.
+  const balance = await getBalance(session.user.id);
+  if (balance === 0) {
+    return NextResponse.json(
+      { error: "No credits", redirectTo: "/dashboard/credits" },
+      { status: 402 }
+    );
+  }
+
+  const { success } = await callStartLimiter.limit(session.user.id!);
+  if (!success) {
+    return NextResponse.json(
+      { error: "Too many requests. Wait before starting another call." },
+      { status: 429, headers: { "Retry-After": "30" } }
+    );
+  }
+
   const apiKey = process.env.DEEPGRAM_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "Deepgram not configured" }, { status: 500 });
@@ -33,9 +53,6 @@ export async function GET() {
     body: JSON.stringify({}),
   });
 
-  const rawText = await res.clone().text();
-  console.log('[DEEPGRAM TOKEN MOBILE] raw response:', rawText);
-
   if (!res.ok) {
     const text = await res.text();
     console.error("[DEEPGRAM TOKEN MOBILE] failed:", res.status, text);
@@ -43,10 +60,8 @@ export async function GET() {
   }
 
   const data = await res.json();
-  console.log("[DEEPGRAM TOKEN MOBILE] full response:", JSON.stringify(data));
 
-  // Field name unconfirmed until the log above is actually observed —
-  // checking the documented/likely candidates in order.
+  // Field name unconfirmed — checking the documented/likely candidates in order.
   const token: string | undefined = data.access_token ?? data.token ?? data.key;
 
   if (!token) {
