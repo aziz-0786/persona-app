@@ -1,11 +1,10 @@
 import NextAuth from "next-auth";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
-import Credentials from "next-auth/providers/credentials";
 import Email from "next-auth/providers/nodemailer";
 import Google from "next-auth/providers/google";
 import { db } from "@/db";
 import { users, accounts, sessions, verificationTokens } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { grantSignupCredits } from "@/lib/credits";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: DrizzleAdapter(db, {
@@ -30,43 +29,30 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
     }),
-
-    // Credentials for dev/single-tenant (replace with Email in prod)
-    Credentials({
-      name: "Email",
-      credentials: {
-        email: { label: "Email", type: "email" },
-      },
-      async authorize(credentials) {
-        if (!credentials?.email) return null;
-        const email = credentials.email as string;
-
-        // Find or create user (single-tenant dev mode)
-        let [user] = await db
-          .select()
-          .from(users)
-          .where(eq(users.email, email))
-          .limit(1);
-
-        if (!user) {
-          [user] = await db
-            .insert(users)
-            .values({ email, name: email.split("@")[0] })
-            .returning();
-        }
-
-        return user;
-      },
-    }),
   ],
   callbacks: {
     async jwt({ token, user }) {
-      if (user) token.userId = user.id;
+      // `user` (and its `role` column) is only present on sign-in — a role
+      // change made afterwards (e.g. via the admin panel) won't be reflected
+      // in this JWT until the user's next sign-in. Acceptable staleness for
+      // an admin-promotion flow that isn't self-service.
+      if (user) {
+        token.userId = user.id;
+        token.role = (user as { role?: string }).role ?? "user";
+      }
       return token;
     },
     async session({ session, token }) {
       if (token.userId) session.user.id = token.userId as string;
+      if (token.role) session.user.role = token.role as string;
       return session;
+    },
+  },
+  events: {
+    // Fires once, on first account creation (DrizzleAdapter), not on every
+    // login — so this is the one-time free-tier grant, not a per-session one.
+    async createUser({ user }) {
+      if (user.id) await grantSignupCredits(user.id);
     },
   },
 });
@@ -79,6 +65,14 @@ declare module "next-auth" {
       email: string;
       name?: string | null;
       image?: string | null;
+      role?: string; // "user" | "admin" | "owner"
     };
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    userId?: string;
+    role?: string;
   }
 }

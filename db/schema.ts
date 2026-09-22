@@ -4,6 +4,7 @@ import {
   timestamp,
   uuid,
   json,
+  jsonb,
   integer,
   boolean,
 } from "drizzle-orm/pg-core";
@@ -19,6 +20,7 @@ export const users = pgTable("users", {
   emailVerified: timestamp("email_verified", { withTimezone: true }),
   displayName: text("display_name"), // preferred name; null until /user-setup is completed
   profileBio: text("profile_bio"), // what personas should know about this user
+  role: text("role").notNull().default("user"), // "user" | "admin" | "owner"
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -222,3 +224,75 @@ export type ChatMessage = typeof chatMessages.$inferSelect;
 export type NewChatMessage = typeof chatMessages.$inferInsert;
 export type PinnedMemory = typeof pinnedMemories.$inferSelect;
 export type NewPinnedMemory = typeof pinnedMemories.$inferInsert;
+
+// ── Credits & Billing ─────────────────────────────────────────────
+// userId columns below are `uuid`, not `text` as originally drafted —
+// users.id is a native Postgres uuid column (see Users section above), and
+// Postgres refuses to create a foreign key between mismatched column types
+// ("incompatible types: text and uuid"). The tables' own `id` primary keys
+// stay `text` (app-generated UUID strings via crypto.randomUUID()) since
+// nothing else references them with a stricter type.
+
+export const calls = pgTable("calls", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  personaId: text("persona_id"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+  durationSeconds: integer("duration_seconds"),
+  creditsUsed: integer("credits_used").notNull().default(0),
+  platform: text("platform").notNull().default("web"),   // "web" | "mobile"
+  status: text("status").notNull().default("active"),    // "active" | "completed" | "failed"
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const creditTransactions = pgTable("credit_transactions", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  type: text("type").notNull(),        // "signup_bonus" | "subscription_refresh" | "topup" | "call_usage" | "refund" | "admin_grant" | "admin_deduction"
+  credits: integer("credits").notNull(),   // positive = credit, negative = debit
+  balanceAfter: integer("balance_after").notNull(),
+  description: text("description"),
+  stripePaymentIntentId: text("stripe_payment_intent_id"),
+  callId: text("call_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const userCreditBalances = pgTable("user_credit_balances", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  balance: integer("balance").notNull().default(0),
+  lifetimeCreditsUsed: integer("lifetime_credits_used").notNull().default(0),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const subscriptions = pgTable("subscriptions", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  stripeCustomerId: text("stripe_customer_id").notNull(),
+  stripeSubscriptionId: text("stripe_subscription_id").notNull().unique(),
+  stripePriceId: text("stripe_price_id").notNull(),
+  status: text("status").notNull(),    // "active" | "cancelled" | "past_due" | "trialing"
+  currentPeriodStart: timestamp("current_period_start", { withTimezone: true }).notNull(),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }).notNull(),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const processedStripeEvents = pgTable("processed_stripe_events", {
+  id: text("id").primaryKey(),   // Stripe event ID (idempotency key)
+  type: text("type").notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Admin ──────────────────────────────────────────────────────────
+
+export const adminActions = pgTable("admin_actions", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  adminId: uuid("admin_id").notNull().references(() => users.id),
+  targetUserId: uuid("target_user_id").references(() => users.id),
+  action: text("action").notNull(), // "credit_adjust" | "account_disable" | "account_enable" | "manual_note"
+  payload: jsonb("payload"), // action-specific data
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
