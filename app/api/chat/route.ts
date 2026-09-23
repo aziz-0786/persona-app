@@ -2,11 +2,13 @@ import { NextRequest } from "next/server";
 import Groq from "groq-sdk";
 import OpenAI from "openai";
 import { auth } from "@/lib/auth";
+import { mobileAuth } from "@/lib/mobile-auth";
 import { db } from "@/db";
 import { personas, users, chatMessages, pinnedMemories } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { queryMemories } from "@/lib/pinecone";
 import { detectAutoPin } from "@/lib/auto-pin";
+import { chatLimiter } from "@/lib/ratelimit";
 
 // Persona ownership cache — avoids a per-turn Neon round-trip for a lookup
 // whose result can't change mid-call (a persona's ownership is fixed for
@@ -548,8 +550,17 @@ export async function POST(req: NextRequest) {
   const t0 = Date.now();
   console.log(`[CHAT] request received at ${t0}`);
   const session = await auth();
-  if (!session?.user) {
+  const userId = session?.user?.id ?? (await mobileAuth(req))?.userId;
+  if (!userId) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  const { success } = await chatLimiter.limit(userId);
+  if (!success) {
+    return new Response(
+      JSON.stringify({ error: "Too many requests. Please slow down." }),
+      { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "60" } }
+    );
   }
   console.log(`[TIMING] auth: ${Date.now() - t0}ms`);
 
@@ -573,7 +584,7 @@ export async function POST(req: NextRequest) {
     // warming it here in parallel with the persona lookup keeps it off the
     // first real turn.
     const [warmupPersona] = await Promise.all([
-      getPersonaWithCache(personaId, session.user.id),
+      getPersonaWithCache(personaId, userId),
       process.env.PINECONE_API_KEY
         ? queryMemories(personaId, "warmup", 3).catch(() => {})
         : Promise.resolve(),
@@ -595,7 +606,7 @@ export async function POST(req: NextRequest) {
   console.log('[EMOTION HISTORY]', safeEmotionHistory);
 
   // Load persona (verify ownership) — cached, see getPersonaWithCache above.
-  const persona = await getPersonaWithCache(personaId, session.user.id);
+  const persona = await getPersonaWithCache(personaId, userId);
 
   if (!persona) {
     return new Response("Persona not found", { status: 404 });
@@ -606,7 +617,7 @@ export async function POST(req: NextRequest) {
   // awaited: a DB hiccup here must never delay or block the response.
   persistMessage({
     personaId,
-    userId: session.user.id,
+    userId,
     role: "user",
     content: message,
     emotion: null,
@@ -627,7 +638,7 @@ export async function POST(req: NextRequest) {
     db
       .select({ displayName: users.displayName, profileBio: users.profileBio })
       .from(users)
-      .where(eq(users.id, session.user.id))
+      .where(eq(users.id, userId))
       .limit(1),
     // Pinecone integrated inference embeds `message` server-side — no
     // separate embedding call. Degrades to [] if the persona has no
@@ -920,7 +931,7 @@ export async function POST(req: NextRequest) {
         if (fullAssistantText.trim()) {
           persistMessage({
             personaId,
-            userId: session.user.id,
+            userId,
             role: "assistant",
             content: fullAssistantText,
             emotion: detectedEmotion,

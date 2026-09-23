@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { mobileAuth } from "@/lib/mobile-auth";
 import { db } from "@/db";
 import { personas } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { CHATTERBOX_PRESETS } from "@/lib/utils";
+import { chatLimiter } from "@/lib/ratelimit";
 
 // RunPod TTS endpoint: lzgcc945pqi103
 // Set max_workers=0 on dashboard when not testing to stop billing.
@@ -174,8 +176,17 @@ async function cartesiaTts(text: string, voiceId: string, emotion: string): Prom
 
 export async function POST(req: NextRequest) {
   const session = await auth();
-  if (!session?.user) {
+  const userId = session?.user?.id ?? (await mobileAuth(req))?.userId;
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { success } = await chatLimiter.limit(userId);
+  if (!success) {
+    return NextResponse.json(
+      { error: "Too many requests. Please slow down." },
+      { status: 429, headers: { "Retry-After": "60" } }
+    );
   }
 
   const body = await req.json();
@@ -195,7 +206,7 @@ export async function POST(req: NextRequest) {
   const [ownership] = await db
     .select({ cartesiaVoiceId: personas.cartesiaVoiceId })
     .from(personas)
-    .where(and(eq(personas.id, personaId), eq(personas.userId, session.user.id)))
+    .where(and(eq(personas.id, personaId), eq(personas.userId, userId)))
     .limit(1);
 
   if (!ownership) {

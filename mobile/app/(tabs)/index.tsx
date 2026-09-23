@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { View, Text, Pressable, StyleSheet, ActivityIndicator, Alert } from "react-native";
+import { View, Text, Pressable, StyleSheet, ActivityIndicator } from "react-native";
+import { useRouter } from "expo-router";
 import { useGoogleAuth } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 
@@ -7,6 +8,7 @@ const ACCENT = "#6C5FF6";
 
 export default function HomeScreen() {
   const { session, isLoading, signIn } = useGoogleAuth();
+  const router = useRouter();
   const [credits, setCredits] = useState<number | null>(null);
   const [loadingBalance, setLoadingBalance] = useState(false);
 
@@ -20,9 +22,7 @@ export default function HomeScreen() {
   }, [session]);
 
   function handleStartCall() {
-    // TODO: wire to a real call screen once mobile has its own call
-    // audio/WebSocket pipeline — this task only scaffolds the app shell.
-    Alert.alert("Coming soon", "Calling from mobile isn't wired up yet.");
+    router.push("/call");
   }
 
   if (isLoading) {

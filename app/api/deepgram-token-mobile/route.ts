@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { mobileAuth } from "@/lib/mobile-auth";
 import { callStartLimiter } from "@/lib/ratelimit";
 import { getBalance } from "@/lib/credits";
 
@@ -13,16 +14,20 @@ export const runtime = "nodejs";
 // /v1/auth/grant doesn't fit there and gets rejected. Native mobile WS
 // clients aren't limited that way (they can set a real Authorization
 // header), so this route uses /v1/auth/grant's JWT directly instead.
-export async function GET() {
+//
+// Dual auth (session or Bearer JWT) — the Expo app has no NextAuth session
+// cookie, only the JWT from /api/auth/mobile-token.
+export async function GET(req: NextRequest) {
   console.log('[deepgram-token-mobile] called at', new Date().toISOString());
   const session = await auth();
-  if (!session?.user) {
+  const userId = session?.user?.id ?? (await mobileAuth(req))?.userId;
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // Second line of defense — /api/calls/start also checks this, but a
   // zero-balance user should never even get a working Deepgram token.
-  const balance = await getBalance(session.user.id);
+  const balance = await getBalance(userId);
   if (balance === 0) {
     return NextResponse.json(
       { error: "No credits", redirectTo: "/dashboard/credits" },
@@ -30,7 +35,7 @@ export async function GET() {
     );
   }
 
-  const { success } = await callStartLimiter.limit(session.user.id!);
+  const { success } = await callStartLimiter.limit(userId);
   if (!success) {
     return NextResponse.json(
       { error: "Too many requests. Wait before starting another call." },

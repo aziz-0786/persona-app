@@ -1,7 +1,19 @@
 import * as SecureStore from "expo-secure-store";
 import { SESSION_TOKEN_KEY } from "./auth";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL;
+export const API_URL = process.env.EXPO_PUBLIC_API_URL;
+
+// Carries the HTTP status through so callers can branch on specific codes
+// (e.g. 402 "no credits") without re-parsing a plain Error's message.
+export class ApiError extends Error {
+  status: number;
+  data: unknown;
+  constructor(message: string, status: number, data: unknown) {
+    super(message);
+    this.status = status;
+    this.data = data;
+  }
+}
 
 export async function apiFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const token = await SecureStore.getItemAsync(SESSION_TOKEN_KEY);
@@ -13,7 +25,11 @@ export async function apiFetch<T = unknown>(path: string, options: RequestInit =
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(typeof data.error === "string" ? data.error : `Request failed (${res.status})`);
+    throw new ApiError(
+      typeof data.error === "string" ? data.error : `Request failed (${res.status})`,
+      res.status,
+      data
+    );
   }
   return data as T;
 }

@@ -1,3 +1,4 @@
+import "react-native-get-random-values";
 import { Stack } from "expo-router";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -8,7 +9,9 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <SessionProvider>
-          <Stack screenOptions={{ headerShown: false }} />
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="call" options={{ presentation: "fullScreenModal", headerShown: false }} />
+          </Stack>
         </SessionProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

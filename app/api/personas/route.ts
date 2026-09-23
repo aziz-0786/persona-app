@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { mobileAuth } from "@/lib/mobile-auth";
 import { db } from "@/db";
 import { personas } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -8,9 +9,12 @@ export const runtime = "nodejs";
 
 // GET /api/personas?id=<uuid>  — single persona
 // GET /api/personas             — list all for user
+// Dual auth (session or Bearer JWT) — the mobile call screen needs this to
+// find a persona to call, since it has no persona-selection UI of its own.
 export async function GET(req: NextRequest) {
   const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const userId = session?.user?.id ?? (await mobileAuth(req))?.userId;
+  if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const id = req.nextUrl.searchParams.get("id");
 
@@ -18,13 +22,13 @@ export async function GET(req: NextRequest) {
     const [persona] = await db
       .select()
       .from(personas)
-      .where(and(eq(personas.id, id), eq(personas.userId, session.user.id)))
+      .where(and(eq(personas.id, id), eq(personas.userId, userId)))
       .limit(1);
     if (!persona) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json(persona);
   }
 
-  const all = await db.select().from(personas).where(eq(personas.userId, session.user.id));
+  const all = await db.select().from(personas).where(eq(personas.userId, userId));
   return NextResponse.json(all);
 }
 
