@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet, Animated } from "react-native";
 import { useRouter } from "expo-router";
+import { useAudioStream } from "expo-audio";
 import { useGoogleAuth } from "@/lib/auth";
 import { apiFetch, ApiError, API_URL } from "@/lib/api";
 import { createDeepgramConnection } from "@/lib/deepgram";
@@ -83,10 +84,30 @@ export default function CallScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
-  const recorderRef = useRef<AudioRecorder | null>(null);
   const playerRef = useRef<TTSPlayer | null>(null);
   const callIdRef = useRef<string | null>(null);
   const startTimeRef = useRef(0);
+
+  // Native PCM tap — see mobile/lib/audioRecorder.ts for why this has to be a
+  // hook call here rather than something AudioRecorder creates itself.
+  // sampleRate/channels/encoding are stable literals, so useAudioStream's
+  // internal memoization (keyed on those three) never recreates the native
+  // stream across renders; onBuffer is stored in a ref internally by the
+  // hook, so passing a fresh closure here on every render is safe.
+  const { stream: audioStream } = useAudioStream({
+    sampleRate: 16000,
+    channels: 1,
+    encoding: "int16",
+    onBuffer: (buffer) => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(buffer.data);
+      }
+    },
+  });
+  const recorderRef = useRef<AudioRecorder | null>(null);
+  if (!recorderRef.current) {
+    recorderRef.current = new AudioRecorder(audioStream);
+  }
 
   const personaIdRef = useRef<string | null>(null);
   const historyRef = useRef<HistoryTurn[]>([]);
@@ -159,16 +180,16 @@ export default function CallScreen() {
       }
 
       setStatus("listening");
-      if (wsRef.current && recorderRef.current) {
-        await recorderRef.current.start(wsRef.current);
+      if (wsRef.current) {
+        await recorderRef.current?.start();
       }
     } catch (err) {
       // TODO: remove before prod — debug only, doesn't log transcript/audio content.
       console.error("[CALL] turn failed:", err);
       setError(err instanceof Error ? err.message : "Something went wrong");
       setStatus("listening");
-      if (wsRef.current && recorderRef.current) {
-        await recorderRef.current.start(wsRef.current).catch(() => {});
+      if (wsRef.current) {
+        await recorderRef.current?.start().catch(() => {});
       }
     }
   }
@@ -213,9 +234,7 @@ export default function CallScreen() {
       const ws = await createDeepgramConnection(deepgramToken, handleTranscript, handleDeepgramError);
       wsRef.current = ws;
 
-      const recorder = new AudioRecorder();
-      await recorder.start(ws);
-      recorderRef.current = recorder;
+      await recorderRef.current!.start();
 
       playerRef.current = new TTSPlayer();
 
