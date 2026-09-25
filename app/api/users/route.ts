@@ -22,11 +22,14 @@ export async function DELETE() {
 
   // Delete each persona's Pinecone namespaces
   const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY! });
+  // Hoisted out of the loop below — was refetching the same index list on
+  // every persona, which is both slow and a redundant Pinecone call.
+  const { indexes } = await pc.listIndexes();
+  const memoriesIndexExists = indexes?.some((i) => i.name === MEMORIES_INDEX_NAME);
   for (const { id: personaId } of userPersonas) {
     try { await deleteKnowledgeNamespace(personaId); } catch {}
     try {
-      const { indexes } = await pc.listIndexes();
-      if (indexes?.some((i) => i.name === MEMORIES_INDEX_NAME)) {
+      if (memoriesIndexExists) {
         await pc.index(MEMORIES_INDEX_NAME).namespace(personaId).deleteAll();
       }
     } catch {}

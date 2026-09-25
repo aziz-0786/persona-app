@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { stripe, PLANS } from "@/lib/stripe";
+import { getStripeClient, PLANS } from "@/lib/stripe";
 import { db } from "@/db";
 import { subscriptions, processedStripeEvents } from "@/db/schema";
 import { addCredits } from "@/lib/credits";
@@ -17,6 +17,8 @@ export async function POST(req: NextRequest) {
   if (!webhookSecret) {
     return NextResponse.json({ error: "Webhook secret not configured" }, { status: 500 });
   }
+
+  const stripe = getStripeClient();
 
   const body = await req.text();
   const sig = req.headers.get("stripe-signature");

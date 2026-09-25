@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import OpenAI from "openai";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { personas, type Persona } from "@/db/schema";
@@ -8,8 +9,6 @@ import { BIO_KEY, HARD_RULES_KEY } from "@/lib/personaFields";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-const RUNPOD_LLM_URL = `https://api.runpod.ai/v2/${process.env.RUNPOD_LLM_ENDPOINT_ID}/openai/v1/chat/completions`;
 
 function buildSystemPrompt(name: string): string {
   return `Generate a compact character card (300-500 tokens) for an AI persona.
@@ -91,45 +90,37 @@ export async function POST(req: NextRequest) {
   let characterCardText: string;
   let stub = false;
 
-  if (!process.env.RUNPOD_API_KEY || !process.env.RUNPOD_LLM_ENDPOINT_ID) {
+  if (!process.env.DEEPSEEK_API_KEY) {
     characterCardText = buildStubCard(persona.name, persona.relationship);
     stub = true;
   } else {
-    // RunPod cold-starts or misconfigured endpoints shouldn't hard-block the
-    // wizard — fall back to a stub card (same as when keys are absent) and
-    // log the real cause server-side instead of surfacing a dead end.
+    // DeepSeek failures (rate limit, network error, etc.) shouldn't hard-block
+    // the wizard — fall back to a stub card (same as when the key is absent)
+    // and log the real cause server-side instead of surfacing a dead end.
     try {
-      const runpodRes = await fetch(RUNPOD_LLM_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.RUNPOD_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: process.env.RUNPOD_LLM_MODEL ?? "meta-llama/Llama-3.1-8B-Instruct",
-          messages: [
-            { role: "system", content: buildSystemPrompt(persona.name) },
-            { role: "user", content: buildUserPrompt(persona) },
-          ],
-          max_tokens: 700,
-          temperature: 0.85,
-          top_p: 0.9,
-          stream: false,
-        }),
+      const deepseek = new OpenAI({
+        apiKey: process.env.DEEPSEEK_API_KEY,
+        baseURL: "https://api.deepseek.com",
       });
+      const res = await deepseek.chat.completions.create({
+        model: process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash",
+        messages: [
+          { role: "system", content: buildSystemPrompt(persona.name) },
+          { role: "user", content: buildUserPrompt(persona) },
+        ],
+        max_tokens: 700,
+        temperature: 0.85,
+        top_p: 0.9,
+        thinking: { type: "disabled" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any);
 
-      if (!runpodRes.ok) {
-        const err = await runpodRes.text();
-        throw new Error(`RunPod ${runpodRes.status}: ${err}`);
-      }
-
-      const data = await runpodRes.json();
-      const content = data.choices?.[0]?.message?.content?.trim();
+      const content = res.choices[0]?.message?.content?.trim();
       if (!content) throw new Error("Empty response from LLM");
 
       characterCardText = content;
     } catch (err) {
-      console.error("RunPod generate-card error, falling back to stub card:", err);
+      console.error("DeepSeek generate-card error, falling back to stub card:", err);
       characterCardText = buildStubCard(persona.name, persona.relationship);
       stub = true;
     }

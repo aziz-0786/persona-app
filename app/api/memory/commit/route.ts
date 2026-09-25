@@ -12,10 +12,10 @@ export const maxDuration = 30;
 // Self-contained (not imported from /api/chat/route.ts) since extraction is
 // a single non-streaming completion — a fundamentally different shape than
 // that route's streaming callLLM. Same provider priority though: DeepSeek
-// primary, Groq fallback. Was RunPod until this fix — RUNPOD_LLM_ENDPOINT_ID
-// has been commented out in .env since the Groq/DeepSeek migration, so this
-// route has been silently no-oping (returning stored:0, stub:true) on every
-// real call since then.
+// primary, Groq fallback. Was RunPod originally — RUNPOD_LLM_ENDPOINT_ID has
+// been commented out in .env since the Groq/DeepSeek migration, which left
+// this route silently no-oping (stored:0, stub:true) on every real call
+// until this DeepSeek/Groq rewrite.
 async function callExtractionLLM(prompt: string): Promise<string | null> {
   if (process.env.DEEPSEEK_API_KEY) {
     try {
@@ -100,7 +100,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (!process.env.DEEPSEEK_API_KEY && !process.env.GROQ_API_KEY) {
-    return NextResponse.json({ stored: 0, stub: true });
+    return NextResponse.json({ stored: 0, error: "No LLM provider configured" });
   }
 
   // Ask LLM to extract personal facts from the transcript. Deliberately
@@ -120,46 +120,54 @@ Return ONLY a JSON array of strings. Example: ["User works at a startup", "User 
 Conversation transcript:
 ${transcript}`;
 
-  const content = await callExtractionLLM(extractionPrompt);
-  console.log(`[MEMORY] extraction raw output: "${content?.slice(0, 200)}"`);
-  if (content === null) {
-    console.error("[MEMORY] extraction failed — DeepSeek and Groq both unavailable/erroring");
-    return NextResponse.json({ stored: 0, error: "extraction failed" });
-  }
-
-  let facts: string[] = [];
   try {
-    facts = JSON.parse(content.replace(/```json|```/g, "").trim());
-    if (!Array.isArray(facts)) facts = [];
-  } catch {
-    facts = [];
+    const content = await callExtractionLLM(extractionPrompt);
+    console.log(`[MEMORY] extraction raw output: "${content?.slice(0, 200)}"`);
+    if (content === null) {
+      console.error("[MEMORY] extraction failed — DeepSeek and Groq both unavailable/erroring");
+      return NextResponse.json({ stored: 0, error: "extraction failed" });
+    }
+
+    let facts: string[] = [];
+    try {
+      facts = JSON.parse(content.replace(/```json|```/g, "").trim());
+      if (!Array.isArray(facts)) facts = [];
+    } catch {
+      facts = [];
+    }
+
+    console.log(`[MEMORY] extracted facts count: ${facts.length}`);
+    if (facts.length === 0) {
+      console.log(`[MEMORY] stored:0 reason: LLM extracted no facts from transcript (${transcript.length} chars)`);
+      return NextResponse.json({ stored: 0 });
+    }
+
+    // Store in Postgres memories_log — source of truth
+    const rows = await db
+      .insert(memoriesLog)
+      .values(
+        facts.map((text) => ({
+          personaId,
+          text,
+          source: "call" as const,
+        }))
+      )
+      .returning();
+
+    // Pinecone upsert for semantic retrieval — never throws (see upsertMemory),
+    // so a Pinecone outage can't turn this otherwise-successful commit into an
+    // error response. Awaited (not fire-and-forget) since this route runs at
+    // call-end, not on the live turn-taking path — a few hundred ms here is
+    // fine, unlike /api/chat's SSE stream.
+    await upsertMemory(personaId, facts);
+
+    console.log(`[MEMORY] commit complete — postgres: ${rows.length}, facts: ${facts.length}`);
+    return NextResponse.json({ stored: rows.length, facts });
+  } catch (err) {
+    console.error("[MEMORY] commit failed:", err);
+    return NextResponse.json({
+      stored: 0,
+      error: err instanceof Error ? err.message : "Unknown error",
+    });
   }
-
-  console.log(`[MEMORY] extracted facts count: ${facts.length}`);
-  if (facts.length === 0) {
-    console.log(`[MEMORY] stored:0 reason: LLM extracted no facts from transcript (${transcript.length} chars)`);
-    return NextResponse.json({ stored: 0 });
-  }
-
-  // Store in Postgres memories_log — source of truth
-  const rows = await db
-    .insert(memoriesLog)
-    .values(
-      facts.map((text) => ({
-        personaId,
-        text,
-        source: "call" as const,
-      }))
-    )
-    .returning();
-
-  // Pinecone upsert for semantic retrieval — never throws (see upsertMemory),
-  // so a Pinecone outage can't turn this otherwise-successful commit into an
-  // error response. Awaited (not fire-and-forget) since this route runs at
-  // call-end, not on the live turn-taking path — a few hundred ms here is
-  // fine, unlike /api/chat's SSE stream.
-  await upsertMemory(personaId, facts);
-
-  console.log(`[MEMORY] commit complete — postgres: ${rows.length}, facts: ${facts.length}`);
-  return NextResponse.json({ stored: rows.length, facts });
 }
