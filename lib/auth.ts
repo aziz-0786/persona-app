@@ -1,6 +1,5 @@
 import NextAuth from "next-auth";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
-import Email from "next-auth/providers/nodemailer";
 import Google from "next-auth/providers/google";
 import { db } from "@/db";
 import { users, accounts, sessions, verificationTokens } from "@/db/schema";

@@ -6,12 +6,6 @@ import { usePersona } from "@/lib/hooks";
 import { decodeB64ToAudioBuffer, createAudioQueue, extractClauses, type AudioQueue } from "@/lib/audio";
 import WallpaperCall from "@/components/WallpaperCall";
 
-// No TS types ship for the TalkingHead instance — headRef/onBuffer lip-sync
-// wiring is now dead now that Avatar3D is gone, but harmless to leave typed
-// this way if it's ever reconnected to a future video-avatar element.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TalkingHeadInstance = any;
-
 type ConvState = "idle" | "listening" | "thinking" | "speaking";
 type HistoryTurn = { role: "user" | "assistant"; content: string };
 
@@ -166,7 +160,6 @@ export default function CallPage() {
   const didInitRef = useRef(false);
   const deepgramCancelledRef = useRef(false);
   const micInitPromiseRef = useRef<Promise<void> | null>(null);
-  const headRef = useRef<TalkingHeadInstance>(null);
   // Set once, the first time connectDeepgram's WebSocket actually opens (the
   // call becoming active) — not at component mount, which can be several
   // seconds earlier while the Deepgram token fetch/warmup TTS ping are still
@@ -247,17 +240,6 @@ export default function CallPage() {
   function getAudioQueue(): AudioQueue {
     if (!audioQueueRef.current) {
       const queue = createAudioQueue(getAudioContext());
-      // Drives the 3D avatar's lip-sync off the same buffers the queue is
-      // about to play — registered once here rather than per-turn, since
-      // unlike onended it doesn't need any turn-specific state.
-      queue.onBuffer((buffer) => {
-        headRef.current?.speakAudio?.({
-          audio: buffer,
-          words: [],
-          wtimes: [],
-          wdurations: [],
-        });
-      });
       audioQueueRef.current = queue;
     }
     return audioQueueRef.current;
