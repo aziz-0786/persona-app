@@ -357,43 +357,6 @@ function sseStream(lines: string[]): Response {
   });
 }
 
-const HARDCODED: { text: string; emotion: string }[] = [
-  { text: "Hey. What's up?", emotion: "calm" },
-  { text: "Oh, hey! Good to hear from you.", emotion: "happy" },
-  { text: "Hmm, let me think about that for a sec.", emotion: "thinking" },
-  { text: "Wait, really? Tell me more.", emotion: "surprised" },
-];
-
-function stubStreamResponse(): Response {
-  const pick = HARDCODED[Math.floor(Math.random() * HARDCODED.length)];
-
-  return new Response(
-    new ReadableStream({
-      async start(controller) {
-        const enc = new TextEncoder();
-        // 1. emotion event
-        controller.enqueue(enc.encode(
-          `data: ${JSON.stringify({ type: "emotion", emotion: pick.emotion })}\n\n`
-        ));
-        // 2. stream text word by word — emitted as `content`, the field the
-        // client's SSE parser actually reads (it has no handling for
-        // `type: "token"` / `token`, so that shape would render nothing).
-        const words = pick.text.split(" ");
-        for (const word of words) {
-          controller.enqueue(enc.encode(
-            `data: ${JSON.stringify({ content: word + " " })}\n\n`
-          ));
-          await new Promise(r => setTimeout(r, 40));
-        }
-        // 3. done
-        controller.enqueue(enc.encode("data: [DONE]\n\n"));
-        controller.close();
-      }
-    }),
-    { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } }
-  );
-}
-
 // Always closes with [DONE], same as the success path — the client only
 // knows how to end a "Thinking" state by seeing the stream close.
 function errorStreamResponse(message: string): Response {
@@ -669,17 +632,6 @@ export async function POST(req: NextRequest) {
     { role: "user", content: message },
     { role: "system", content: buildZone4Reminder(persona) },
   ];
-
-  // Offline dev mode: set RUNPOD_OFFLINE=true to develop against the canned
-  // stub response without spending LLM requests, or as a last resort when
-  // neither GROQ_API_KEY nor DEEPSEEK_API_KEY is configured yet.
-  const useStub =
-    (!process.env.GROQ_API_KEY && !process.env.DEEPSEEK_API_KEY) ||
-    process.env.RUNPOD_OFFLINE === "true";
-
-  if (useStub) {
-    return stubStreamResponse();
-  }
 
   console.log(`[CHAT] system prompt chars: ${systemPrompt.length}`);
   console.log(`[TIMING] LLM call started: ${Date.now() - t0}ms`);

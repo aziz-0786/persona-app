@@ -20,13 +20,6 @@ export const chatLimiter = new Ratelimit({
   prefix: "rl:chat",
 });
 
-// 100 general API requests per user per minute
-export const apiLimiter = new Ratelimit({
-  redis,
-  limiter: Ratelimit.slidingWindow(100, "60 s"),
-  prefix: "rl:api",
-});
-
 // 10 requests per IP per minute — /api/warmup-db is unauthenticated (it's a
 // health/pre-warm ping), so this is keyed by IP rather than user id.
 export const warmupLimiter = new Ratelimit({

@@ -326,10 +326,6 @@ export async function POST(req: NextRequest) {
   const personaParams = (stage.voiceParamsJson ?? {}) as Partial<typeof emotionPreset>;
   const params = { ...emotionPreset, ...personaParams };
 
-  // Offline/stub short-circuit removed — TTS always calls RunPod now,
-  // regardless of RUNPOD_OFFLINE or missing credentials.
-  const useStub = false;
-
   console.log("[TTS] personaId:", personaId);
   console.log("[TTS] sending to RunPod, text:", text?.slice(0, 50));
 
